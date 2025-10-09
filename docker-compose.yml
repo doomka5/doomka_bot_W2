@@ -1,0 +1,55 @@
+services:
+  bot:
+    build:
+      context: ./bot
+    container_name: telegram_bot
+    restart: always
+    environment:
+      - BOT_TOKEN=154488829:AAG1CQwV38XuX9aMFVP0XwCpNfpcMS0XPKA
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=botdb
+      - DB_USER=botuser
+      - DB_PASS=botpass
+      - GIT_BRANCH=main
+    depends_on:
+      - db
+    networks:
+      - botnet
+
+  web:
+    build:
+      context: ./web
+    container_name: fastapi_web
+    restart: always
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=botdb
+      - DB_USER=botuser
+      - DB_PASS=botpass
+    depends_on:
+      - db
+    ports:
+      - "8181:8182"
+    networks:
+      - botnet
+
+  db:
+    image: postgres:15
+    container_name: postgres_bot
+    restart: always
+    environment:
+      POSTGRES_USER: botuser
+      POSTGRES_PASSWORD: botpass
+      POSTGRES_DB: botdb
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - botnet
+
+networks:
+  botnet:
+    driver: bridge
