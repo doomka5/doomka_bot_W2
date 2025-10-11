@@ -43,63 +43,89 @@ async def init_database() -> None:
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    tg_id BIGINT UNIQUE NOT NULL,
-                    username TEXT NOT NULL,
-                    position TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
-                )
-                """
-            )
+            await _ensure_user_table(conn)
+            await _seed_default_admin(conn)
 
-            # Ensure new deployments with an older users table gain the required columns.
-            await conn.execute(
-                """
-                ALTER TABLE users
-                    ADD COLUMN IF NOT EXISTS username TEXT DEFAULT ''::text,
-                    ADD COLUMN IF NOT EXISTS position TEXT DEFAULT ''::text,
-                    ADD COLUMN IF NOT EXISTS role TEXT DEFAULT ''::text,
-                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT timezone('utc', now());
-                """
-            )
-            await conn.execute("UPDATE users SET username = '' WHERE username IS NULL")
-            await conn.execute("UPDATE users SET position = '' WHERE position IS NULL")
-            await conn.execute("UPDATE users SET role = '' WHERE role IS NULL")
-            await conn.execute(
-                """
-                UPDATE users
-                SET created_at = timezone('utc', now())
-                WHERE created_at IS NULL
-                """
-            )
-            await conn.execute(
-                """
-                ALTER TABLE users
-                    ALTER COLUMN username SET NOT NULL,
-                    ALTER COLUMN position SET NOT NULL,
-                    ALTER COLUMN role SET NOT NULL,
-                    ALTER COLUMN created_at SET NOT NULL;
-                """
-            )
 
-            await conn.execute(
-                """
-                INSERT INTO users (tg_id, username, position, role)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (tg_id) DO UPDATE
-                SET username = EXCLUDED.username,
-                    position = EXCLUDED.position,
-                    role = EXCLUDED.role
-                """,
-                37352491,
-                "DooMka",
-                "Администратор",
-                "администратор с полными правами и доступом",
-            )
+async def _ensure_user_table(conn: asyncpg.Connection) -> None:
+    """Create the users table and add any missing legacy columns."""
+
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            tg_id BIGINT UNIQUE NOT NULL,
+            username TEXT NOT NULL,
+            position TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
+
+    column_rows = await conn.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'users'
+        """
+    )
+    existing_columns = {row["column_name"] for row in column_rows}
+
+    if "username" not in existing_columns:
+        await conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+    if "position" not in existing_columns:
+        await conn.execute("ALTER TABLE users ADD COLUMN position TEXT")
+    if "role" not in existing_columns:
+        await conn.execute("ALTER TABLE users ADD COLUMN role TEXT")
+    if "created_at" not in existing_columns:
+        await conn.execute(
+            """
+            ALTER TABLE users
+                ADD COLUMN created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+            """
+        )
+
+    await conn.execute("UPDATE users SET username = '' WHERE username IS NULL")
+    await conn.execute("UPDATE users SET position = '' WHERE position IS NULL")
+    await conn.execute("UPDATE users SET role = '' WHERE role IS NULL")
+    await conn.execute(
+        """
+        UPDATE users
+        SET created_at = timezone('utc', now())
+        WHERE created_at IS NULL
+        """
+    )
+
+    await conn.execute(
+        """
+        ALTER TABLE users
+            ALTER COLUMN username SET NOT NULL,
+            ALTER COLUMN position SET NOT NULL,
+            ALTER COLUMN role SET NOT NULL,
+            ALTER COLUMN created_at SET NOT NULL
+        """
+    )
+
+
+async def _seed_default_admin(conn: asyncpg.Connection) -> None:
+    """Insert or update the requested administrator account."""
+
+    await conn.execute(
+        """
+        INSERT INTO users (tg_id, username, position, role)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tg_id) DO UPDATE
+        SET username = EXCLUDED.username,
+            position = EXCLUDED.position,
+            role = EXCLUDED.role
+        """,
+        37352491,
+        "DooMka",
+        "Администратор",
+        "администратор с полными правами и доступом",
+    )
 
 
 async def close_database() -> None:
