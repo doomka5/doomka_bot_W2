@@ -183,7 +183,10 @@ class AddUserStates(StatesGroup):
 
 # === Клавиатуры ===
 MAIN_MENU_KB = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="Тест")]],
+    keyboard=[
+        [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="Тест")],
+        [KeyboardButton(text="Склад")],
+    ],
     resize_keyboard=True,
 )
 
@@ -200,6 +203,24 @@ USERS_MENU_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="➕ Добавить пользователя")],
         [KeyboardButton(text="📋 Посмотреть всех пользователей")],
         [KeyboardButton(text="⬅️ Назад в настройки")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🧱 Пластики")],
+        [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить"), KeyboardButton(text="➖ Списать")],
+        [KeyboardButton(text="💬 Комментировать")],
+        [KeyboardButton(text="🔁 Переместить"), KeyboardButton(text="🔍 Найти")],
+        [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
 )
@@ -263,6 +284,45 @@ async def handle_back_to_settings(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
     await handle_settings(message)
+
+
+@dp.message(F.text == "Склад")
+async def handle_warehouse_menu(message: Message) -> None:
+    await message.answer("🏢 Склад. Выберите раздел:", reply_markup=WAREHOUSE_MENU_KB)
+
+@dp.message(F.text == "🧱 Пластики")
+async def handle_warehouse_plastics(message: Message) -> None:
+    await message.answer("📦 Раздел «Пластики». Выберите действие:", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+@dp.message(F.text == "➕ Добавить")
+async def handle_plastics_add(message: Message) -> None:
+    await message.answer("➕ Добавить: опция пока находится в разработке.", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+@dp.message(F.text == "➖ Списать")
+async def handle_plastics_write_off(message: Message) -> None:
+    await message.answer("➖ Списать: опция пока находится в разработке.", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+@dp.message(F.text == "💬 Комментировать")
+async def handle_plastics_comment(message: Message) -> None:
+    await message.answer("💬 Комментировать: опция пока находится в разработке.", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+@dp.message(F.text == "🔁 Переместить")
+async def handle_plastics_move(message: Message) -> None:
+    await message.answer("🔁 Переместить: опция пока находится в разработке.", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+@dp.message(F.text == "🔍 Найти")
+async def handle_plastics_search(message: Message) -> None:
+    await message.answer("🔍 Найти: опция пока находится в разработке.", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+@dp.message(F.text == "⬅️ Назад к складу")
+async def handle_plastics_back(message: Message) -> None:
+    await message.answer("🏢 Склад. Выберите раздел:", reply_markup=WAREHOUSE_MENU_KB)
 
 
 @dp.message(F.text == "➕ Добавить пользователя")
