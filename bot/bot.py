@@ -114,7 +114,7 @@ class AddUserStates(StatesGroup):
 
 
 MAIN_MENU_KB = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="⚙️ Настройки")]],
+    keyboard=[[KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="Тест")]],
     resize_keyboard=True,
 )
 
@@ -166,6 +166,13 @@ async def handle_start(message: Message) -> None:
         "👋 Привет! Нажмите «⚙️ Настройки», чтобы управлять пользователями.",
         reply_markup=MAIN_MENU_KB,
     )
+
+
+@dp.message(F.text == "Тест")
+async def handle_test(message: Message) -> None:
+    """Отвечает на тестовую кнопку."""
+
+    await message.answer("тест ок")
 
 
 @dp.message(Command("settings"))
