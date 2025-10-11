@@ -13,6 +13,8 @@ async def root():
     conn = await asyncpg.connect(
         host=DB_HOST, user=DB_USER, password=DB_PASS, database=DB_NAME
     )
-    rows = await conn.fetch("SELECT tg_id, name FROM users ORDER BY id DESC")
+    rows = await conn.fetch(
+        "SELECT tg_id, username, position, role FROM users ORDER BY id DESC"
+    )
     await conn.close()
     return {"users": [dict(r) for r in rows]}
