@@ -317,3 +317,17 @@ async def handle_warehouse_settings_plastic(message: Message) -> None:
 
 # === Пользователи ===
 # ... (остальной код добавления и просмотра пользователей не менялся)
+
+
+async def main() -> None:
+    """Запускает поллинг Telegram-бота."""
+
+    bot = Bot(BOT_TOKEN)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
