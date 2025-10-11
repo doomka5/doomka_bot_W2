@@ -208,7 +208,16 @@ USERS_MENU_KB = ReplyKeyboardMarkup(
 WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧱 Пластики")],
+        [KeyboardButton(text="⚙️ Настройки склада")],
         [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🧱 Пластик")],
+        [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
 )
@@ -261,6 +270,15 @@ async def handle_settings(message: Message) -> None:
     await message.answer("⚙️ Настройки. Выберите действие:", reply_markup=SETTINGS_MENU_KB)
 
 
+@dp.message(F.text == "⚙️ Настройки склада")
+async def handle_warehouse_settings(message: Message) -> None:
+    if not await ensure_admin_access(message):
+        return
+    await message.answer(
+        "⚙️ Настройки склада. Выберите действие:", reply_markup=WAREHOUSE_SETTINGS_MENU_KB
+    )
+
+
 @dp.message(F.text == "👥 Пользователи")
 async def handle_users_menu(message: Message) -> None:
     if not await ensure_admin_access(message):
@@ -289,6 +307,16 @@ async def handle_warehouse_menu(message: Message) -> None:
 @dp.message(F.text == "🧱 Пластики")
 async def handle_warehouse_plastics(message: Message) -> None:
     await message.answer("📦 Раздел «Пластики». Выберите действие:", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+@dp.message(F.text == "🧱 Пластик")
+async def handle_warehouse_settings_plastic(message: Message) -> None:
+    if not await ensure_admin_access(message):
+        return
+    await message.answer(
+        "⚙️ Настройки склада → Пластик: опция пока находится в разработке.",
+        reply_markup=WAREHOUSE_SETTINGS_MENU_KB,
+    )
 
 
 @dp.message(F.text == "➕ Добавить")
