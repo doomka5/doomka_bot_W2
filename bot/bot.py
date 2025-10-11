@@ -120,8 +120,17 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
 
 SETTINGS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="➕ Добавить пользователя")],
+        [KeyboardButton(text="👥 Пользователи")],
         [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
+USERS_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить пользователя")],
+        [KeyboardButton(text="📋 Посмотреть всех пользователей")],
+        [KeyboardButton(text="⬅️ Назад в настройки")],
     ],
     resize_keyboard=True,
 )
@@ -167,11 +176,25 @@ async def handle_settings(message: Message) -> None:
     await message.answer("⚙️ Настройки. Выберите действие:", reply_markup=SETTINGS_MENU_KB)
 
 
+@dp.message(F.text == "👥 Пользователи")
+async def handle_users_menu(message: Message) -> None:
+    """Открывает раздел управления пользователями."""
+
+    await message.answer("👥 Пользователи. Выберите действие:", reply_markup=USERS_MENU_KB)
+
+
 @dp.message(F.text == "⬅️ Главное меню")
 async def handle_back_to_main(message: Message) -> None:
     """Возвращает пользователя в главное меню."""
 
     await message.answer("Главное меню.", reply_markup=MAIN_MENU_KB)
+
+
+@dp.message(F.text == "⬅️ Назад в настройки")
+async def handle_back_to_settings(message: Message) -> None:
+    """Возвращает пользователя в меню настроек."""
+
+    await handle_settings(message)
 
 
 @dp.message(F.text == "➕ Добавить пользователя")
@@ -260,7 +283,7 @@ async def process_role(message: Message, state: FSMContext) -> None:
         f"• Имя: {data['username']}\n"
         f"• Должность: {data['position']}\n"
         f"• Роль: {role}",
-        reply_markup=SETTINGS_MENU_KB,
+        reply_markup=USERS_MENU_KB,
     )
 
 
@@ -308,6 +331,59 @@ async def handle_add_user(message: Message, command: CommandObject) -> None:
         f"• Имя: {username}\n"
         f"• Должность: {position}\n"
         f"• Роль: {role}"
+    )
+
+
+async def fetch_all_users_from_db() -> list[asyncpg.Record]:
+    """Возвращает список всех пользователей из базы данных."""
+
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT tg_id, username, position, role
+            FROM users
+            ORDER BY id DESC
+            """
+        )
+    return rows
+
+
+@dp.message(F.text == "📋 Посмотреть всех пользователей")
+async def handle_list_users(message: Message) -> None:
+    """Отображает список всех пользователей."""
+
+    try:
+        rows = await fetch_all_users_from_db()
+    except RuntimeError:
+        await message.answer(
+            "База данных недоступна. Попробуйте позже.",
+            reply_markup=USERS_MENU_KB,
+        )
+        return
+
+    if not rows:
+        await message.answer(
+            "Пока нет ни одного пользователя.",
+            reply_markup=USERS_MENU_KB,
+        )
+        return
+
+    lines = [
+        "• ID: {tg_id}\n  Имя: {username}\n  Должность: {position}\n  Роль: {role}".format(
+            tg_id=row["tg_id"],
+            username=row["username"],
+            position=row["position"],
+            role=row["role"],
+        )
+        for row in rows
+    ]
+
+    await message.answer(
+        "👥 Список пользователей:\n\n" + "\n\n".join(lines),
+        reply_markup=USERS_MENU_KB,
     )
 
 
