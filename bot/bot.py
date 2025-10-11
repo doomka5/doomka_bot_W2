@@ -100,6 +100,7 @@ async def init_database() -> None:
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
+            # Таблица пользователей
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
@@ -112,6 +113,7 @@ async def init_database() -> None:
                 )
                 """
             )
+            # Таблица склада пластиков
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS warehouse_plastics (
@@ -130,6 +132,7 @@ async def init_database() -> None:
                 )
                 """
             )
+            # Добавляем администратора
             await conn.execute(
                 """
                 INSERT INTO users (tg_id, username, position, role)
@@ -208,7 +211,7 @@ USERS_MENU_KB = ReplyKeyboardMarkup(
 WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧱 Пластики")],
-        [KeyboardButton(text="⚙️ Настройки")],
+        [KeyboardButton(text="⚙️ Настройки склада")],
         [KeyboardButton(text="⬅️ Главное меню")],
     ],
     resize_keyboard=True,
@@ -256,6 +259,7 @@ async def handle_test(message: Message) -> None:
 
 @dp.message(Command("settings"))
 @dp.message(F.text == "⚙️ Настройки")
+@dp.message(F.text == "⚙️ Настройки склада")
 async def handle_settings(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
