@@ -1,11 +1,17 @@
-"""Simple Telegram bot that greets users and announces startup."""
+"""Telegram bot with basic user management backed by PostgreSQL."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import shlex
+from typing import Optional
 
+import asyncpg
 from aiogram import Bot, Dispatcher
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
+from aiogram.filters.command import CommandObject
 from aiogram.types import Message
 
 logging.basicConfig(level=logging.INFO)
@@ -14,26 +20,191 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is not set")
 
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
+DB_NAME = os.getenv("DB_NAME", "botdb")
+DB_USER = os.getenv("DB_USER", "botuser")
+DB_PASS = os.getenv("DB_PASS", "botpass")
+
+db_pool: Optional[asyncpg.Pool] = None
+
+
+async def init_database() -> None:
+    """Create the users table and ensure the default administrator exists."""
+
+    global db_pool
+    db_pool = await asyncpg.create_pool(
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME,
+    )
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                tg_id BIGINT UNIQUE NOT NULL,
+                username TEXT NOT NULL,
+                position TEXT NOT NULL,
+                role TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+            )
+            """
+        )
+
+        # Ensure new deployments with an older users table gain the required columns.
+        await conn.execute(
+            """
+            ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS username TEXT DEFAULT ''::text,
+                ADD COLUMN IF NOT EXISTS position TEXT DEFAULT ''::text,
+                ADD COLUMN IF NOT EXISTS role TEXT DEFAULT ''::text,
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT timezone('utc', now());
+            """
+        )
+        await conn.execute("UPDATE users SET username = '' WHERE username IS NULL")
+        await conn.execute("UPDATE users SET position = '' WHERE position IS NULL")
+        await conn.execute("UPDATE users SET role = '' WHERE role IS NULL")
+        await conn.execute(
+            """
+            ALTER TABLE users
+                ALTER COLUMN username SET NOT NULL,
+                ALTER COLUMN position SET NOT NULL,
+                ALTER COLUMN role SET NOT NULL;
+            """
+        )
+        await conn.execute(
+            """
+            ALTER TABLE users
+                ALTER COLUMN username DROP DEFAULT,
+                ALTER COLUMN position DROP DEFAULT,
+                ALTER COLUMN role DROP DEFAULT;
+            """
+        )
+
+        await conn.execute(
+            """
+            INSERT INTO users (tg_id, username, position, role)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (tg_id) DO UPDATE
+            SET username = EXCLUDED.username,
+                position = EXCLUDED.position,
+                role = EXCLUDED.role
+            """,
+            37352491,
+            "DooMka",
+            "Администратор",
+            "administrator_full_access",
+        )
+
+
+async def close_database() -> None:
+    """Close the database connection pool if it was created."""
+
+    global db_pool
+    if db_pool is not None:
+        await db_pool.close()
+        db_pool = None
+
 
 async def on_startup(bot: Bot) -> None:
-    """Handle dispatcher startup event."""
+    """Handle dispatcher startup event by preparing the database."""
+
+    await init_database()
     greeting = "Привет! Бот запущен и готов к работе."
     logging.info(greeting)
     print(greeting)
 
 
+async def on_shutdown(bot: Bot) -> None:
+    """Release database resources on shutdown."""
+
+    await close_database()
+
+
 dp = Dispatcher()
 dp.startup.register(on_startup)
+dp.shutdown.register(on_shutdown)
 
 
 @dp.message(CommandStart())
 async def handle_start(message: Message) -> None:
     """Reply to /start commands with a greeting."""
-    await message.answer("Привет!")
+
+    await message.answer("Привет! Для добавления пользователей используйте /adduser.")
+
+
+@dp.message(Command("adduser"))
+async def handle_add_user(message: Message, command: CommandObject) -> None:
+    """Add or update a user in the access database via /adduser command."""
+
+    if not command.args:
+        await message.answer(
+            "Использование: /adduser <tg_id> <username> <position> <role>. "
+            "Если значения содержат пробелы, заключайте их в кавычки."
+        )
+        return
+
+    try:
+        parts = shlex.split(command.args)
+    except ValueError:
+        await message.answer("Не удалось разобрать аргументы команды. Проверьте синтаксис.")
+        return
+
+    if len(parts) < 4:
+        await message.answer(
+            "Недостаточно аргументов. Использование: /adduser <tg_id> <username> <position> <role>."
+        )
+        return
+
+    tg_id_str, username, position, *role_parts = parts
+
+    try:
+        tg_id = int(tg_id_str)
+    except ValueError:
+        await message.answer("tg_id должен быть числом.")
+        return
+
+    role = " ".join(role_parts) if role_parts else ""
+    if not role:
+        await message.answer("Роль не может быть пустой.")
+        return
+
+    if db_pool is None:
+        await message.answer("База данных временно недоступна. Попробуйте позже.")
+        return
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO users (tg_id, username, position, role)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (tg_id) DO UPDATE
+            SET username = EXCLUDED.username,
+                position = EXCLUDED.position,
+                role = EXCLUDED.role
+            """,
+            tg_id,
+            username,
+            position,
+            role,
+        )
+
+    await message.answer(
+        "Пользователь успешно добавлен или обновлён:\n"
+        f"• ID: {tg_id}\n"
+        f"• Ник: {username}\n"
+        f"• Должность: {position}\n"
+        f"• Роль: {role}"
+    )
 
 
 async def main() -> None:
     """Entrypoint for running the bot."""
+
     bot = Bot(token=BOT_TOKEN)
     await dp.start_polling(bot)
 
