@@ -4,10 +4,10 @@ import asyncio
 import logging
 import os
 import shlex
-from typing import Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
-from aiogram import Bot, Dispatcher, F
+from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
@@ -15,6 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     KeyboardButton,
     Message,
+    TelegramObject,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
@@ -159,6 +160,92 @@ async def upsert_user_in_db(tg_id: int, username: str, position: str, role: str)
         )
 
 
+async def user_has_access(tg_id: int) -> bool:
+    """Проверяет, добавлен ли пользователь в базу данных."""
+
+    if db_pool is None:
+        logging.warning("Database pool is not initialised when checking access")
+        return False
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM users WHERE tg_id = $1",
+            tg_id,
+        )
+
+    return row is not None
+
+
+async def user_is_admin(tg_id: int) -> bool:
+    """Проверяет, является ли пользователь администратором."""
+
+    if db_pool is None:
+        logging.warning("Database pool is not initialised when checking admin role")
+        return False
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT role FROM users WHERE tg_id = $1",
+            tg_id,
+        )
+
+    if row is None:
+        return False
+
+    role_value = (row["role"] or "").lower()
+    return "админист" in role_value or "admin" in role_value
+
+
+async def ensure_admin_access(message: Message, state: Optional[FSMContext] = None) -> bool:
+    """Сообщает об ошибке, если у пользователя нет прав администратора."""
+
+    if not message.from_user:
+        return False
+
+    if await user_is_admin(message.from_user.id):
+        return True
+
+    if state is not None:
+        await state.clear()
+
+    await message.answer(
+        "🚫 У вас недостаточно прав для управления настройками.",
+        reply_markup=MAIN_MENU_KB,
+    )
+    return False
+
+
+class AccessControlMiddleware(BaseMiddleware):
+    """Ограничивает доступ к боту только добавленным пользователям."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        user_id: Optional[int] = None
+
+        if isinstance(event, Message) and event.from_user:
+            user_id = event.from_user.id
+
+        if user_id is None:
+            return await handler(event, data)
+
+        if await user_has_access(user_id):
+            return await handler(event, data)
+
+        if isinstance(event, Message):
+            await event.answer(
+                "🚫 У вас нет доступа к этому боту. Обратитесь к администратору."
+            )
+        return None
+
+
+access_control_middleware = AccessControlMiddleware()
+dp.message.outer_middleware(access_control_middleware)
+
+
 @dp.message(CommandStart())
 async def handle_start(message: Message) -> None:
     """Приветствие при запуске бота."""
@@ -180,12 +267,18 @@ async def handle_test(message: Message) -> None:
 async def handle_settings(message: Message) -> None:
     """Открывает меню настроек."""
 
+    if not await ensure_admin_access(message):
+        return
+
     await message.answer("⚙️ Настройки. Выберите действие:", reply_markup=SETTINGS_MENU_KB)
 
 
 @dp.message(F.text == "👥 Пользователи")
 async def handle_users_menu(message: Message) -> None:
     """Открывает раздел управления пользователями."""
+
+    if not await ensure_admin_access(message):
+        return
 
     await message.answer("👥 Пользователи. Выберите действие:", reply_markup=USERS_MENU_KB)
 
@@ -201,12 +294,18 @@ async def handle_back_to_main(message: Message) -> None:
 async def handle_back_to_settings(message: Message) -> None:
     """Возвращает пользователя в меню настроек."""
 
+    if not await ensure_admin_access(message):
+        return
+
     await handle_settings(message)
 
 
 @dp.message(F.text == "➕ Добавить пользователя")
 async def handle_add_user_button(message: Message, state: FSMContext) -> None:
     """Запускает сценарий пошагового добавления пользователя."""
+
+    if not await ensure_admin_access(message, state):
+        return
 
     await state.set_state(AddUserStates.waiting_for_tg_id)
     await message.answer(
@@ -218,6 +317,9 @@ async def handle_add_user_button(message: Message, state: FSMContext) -> None:
 @dp.message(AddUserStates.waiting_for_tg_id)
 async def process_tg_id(message: Message, state: FSMContext) -> None:
     """Сохраняет Telegram ID пользователя."""
+
+    if not await ensure_admin_access(message, state):
+        return
 
     try:
         tg_id = int(message.text)
@@ -234,6 +336,9 @@ async def process_tg_id(message: Message, state: FSMContext) -> None:
 async def process_username(message: Message, state: FSMContext) -> None:
     """Сохраняет имя пользователя."""
 
+    if not await ensure_admin_access(message, state):
+        return
+
     username = message.text.strip()
     if not username:
         await message.answer("Имя не может быть пустым. Введите имя пользователя.")
@@ -248,6 +353,9 @@ async def process_username(message: Message, state: FSMContext) -> None:
 async def process_position(message: Message, state: FSMContext) -> None:
     """Сохраняет должность пользователя."""
 
+    if not await ensure_admin_access(message, state):
+        return
+
     position = message.text.strip()
     if not position:
         await message.answer("Должность не может быть пустой. Введите должность пользователя.")
@@ -261,6 +369,9 @@ async def process_position(message: Message, state: FSMContext) -> None:
 @dp.message(AddUserStates.waiting_for_role)
 async def process_role(message: Message, state: FSMContext) -> None:
     """Завершает добавление пользователя и сохраняет данные."""
+
+    if not await ensure_admin_access(message, state):
+        return
 
     role = message.text.strip()
     if not role:
@@ -297,6 +408,9 @@ async def process_role(message: Message, state: FSMContext) -> None:
 @dp.message(Command("adduser"))
 async def handle_add_user(message: Message, command: CommandObject) -> None:
     """Добавление или обновление пользователя в БД."""
+
+    if not await ensure_admin_access(message):
+        return
     if not command.args:
         await message.answer(
             "Использование: /adduser <tg_id> <username> <position> <role>\n"
@@ -361,6 +475,9 @@ async def fetch_all_users_from_db() -> list[asyncpg.Record]:
 @dp.message(F.text == "📋 Посмотреть всех пользователей")
 async def handle_list_users(message: Message) -> None:
     """Отображает список всех пользователей."""
+
+    if not await ensure_admin_access(message):
+        return
 
     try:
         rows = await fetch_all_users_from_db()
