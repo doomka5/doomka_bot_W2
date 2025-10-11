@@ -114,6 +114,24 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS warehouse_plastics (
+                    id SERIAL PRIMARY KEY,
+                    article TEXT NOT NULL,
+                    material TEXT,
+                    thickness NUMERIC(10, 2),
+                    color TEXT,
+                    length NUMERIC(10, 2),
+                    width NUMERIC(10, 2),
+                    warehouse TEXT,
+                    comment TEXT,
+                    employee_id BIGINT,
+                    employee_name TEXT,
+                    arrival_date DATE
+                )
+                """
+            )
+            await conn.execute(
+                """
                 INSERT INTO users (tg_id, username, position, role)
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (tg_id) DO UPDATE

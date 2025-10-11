@@ -15,7 +15,7 @@ DB_SETTINGS = {
 
 @app.on_event("startup")
 async def startup():
-    """Создание таблицы users при старте (если не существует)."""
+    """Создание необходимых таблиц (если не существуют)."""
     conn = await asyncpg.connect(**DB_SETTINGS)
     await conn.execute(
         """
@@ -26,6 +26,24 @@ async def startup():
             position TEXT,
             role TEXT,
             created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS warehouse_plastics (
+            id SERIAL PRIMARY KEY,
+            article TEXT NOT NULL,
+            material TEXT,
+            thickness NUMERIC(10, 2),
+            color TEXT,
+            length NUMERIC(10, 2),
+            width NUMERIC(10, 2),
+            warehouse TEXT,
+            comment TEXT,
+            employee_id BIGINT,
+            employee_name TEXT,
+            arrival_date DATE
         )
         """
     )
