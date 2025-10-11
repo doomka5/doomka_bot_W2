@@ -42,63 +42,64 @@ async def init_database() -> None:
     )
 
     async with db_pool.acquire() as conn:
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                tg_id BIGINT UNIQUE NOT NULL,
-                username TEXT NOT NULL,
-                position TEXT NOT NULL,
-                role TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        async with conn.transaction():
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    tg_id BIGINT UNIQUE NOT NULL,
+                    username TEXT NOT NULL,
+                    position TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
             )
-            """
-        )
 
-        # Ensure new deployments with an older users table gain the required columns.
-        await conn.execute(
-            """
-            ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS username TEXT DEFAULT ''::text,
-                ADD COLUMN IF NOT EXISTS position TEXT DEFAULT ''::text,
-                ADD COLUMN IF NOT EXISTS role TEXT DEFAULT ''::text,
-                ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT timezone('utc', now());
-            """
-        )
-        await conn.execute("UPDATE users SET username = '' WHERE username IS NULL")
-        await conn.execute("UPDATE users SET position = '' WHERE position IS NULL")
-        await conn.execute("UPDATE users SET role = '' WHERE role IS NULL")
-        await conn.execute(
-            """
-            ALTER TABLE users
-                ALTER COLUMN username SET NOT NULL,
-                ALTER COLUMN position SET NOT NULL,
-                ALTER COLUMN role SET NOT NULL;
-            """
-        )
-        await conn.execute(
-            """
-            ALTER TABLE users
-                ALTER COLUMN username DROP DEFAULT,
-                ALTER COLUMN position DROP DEFAULT,
-                ALTER COLUMN role DROP DEFAULT;
-            """
-        )
+            # Ensure new deployments with an older users table gain the required columns.
+            await conn.execute(
+                """
+                ALTER TABLE users
+                    ADD COLUMN IF NOT EXISTS username TEXT DEFAULT ''::text,
+                    ADD COLUMN IF NOT EXISTS position TEXT DEFAULT ''::text,
+                    ADD COLUMN IF NOT EXISTS role TEXT DEFAULT ''::text,
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT timezone('utc', now());
+                """
+            )
+            await conn.execute("UPDATE users SET username = '' WHERE username IS NULL")
+            await conn.execute("UPDATE users SET position = '' WHERE position IS NULL")
+            await conn.execute("UPDATE users SET role = '' WHERE role IS NULL")
+            await conn.execute(
+                """
+                UPDATE users
+                SET created_at = timezone('utc', now())
+                WHERE created_at IS NULL
+                """
+            )
+            await conn.execute(
+                """
+                ALTER TABLE users
+                    ALTER COLUMN username SET NOT NULL,
+                    ALTER COLUMN position SET NOT NULL,
+                    ALTER COLUMN role SET NOT NULL,
+                    ALTER COLUMN created_at SET NOT NULL;
+                """
+            )
 
-        await conn.execute(
-            """
-            INSERT INTO users (tg_id, username, position, role)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (tg_id) DO UPDATE
-            SET username = EXCLUDED.username,
-                position = EXCLUDED.position,
-                role = EXCLUDED.role
-            """,
-            37352491,
-            "DooMka",
-            "Администратор",
-            "administrator_full_access",
-        )
+            await conn.execute(
+                """
+                INSERT INTO users (tg_id, username, position, role)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (tg_id) DO UPDATE
+                SET username = EXCLUDED.username,
+                    position = EXCLUDED.position,
+                    role = EXCLUDED.role
+                """,
+                37352491,
+                "DooMka",
+                "Администратор",
+                "администратор с полными правами и доступом",
+            )
 
 
 async def close_database() -> None:
