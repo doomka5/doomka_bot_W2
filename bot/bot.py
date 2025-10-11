@@ -7,10 +7,17 @@ import shlex
 from typing import Optional
 
 import asyncpg
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.filters.command import CommandObject
-from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -97,10 +104,164 @@ dp.startup.register(on_startup)
 dp.shutdown.register(on_shutdown)
 
 
+class AddUserStates(StatesGroup):
+    """Состояния машины для пошагового добавления пользователя."""
+
+    waiting_for_tg_id = State()
+    waiting_for_username = State()
+    waiting_for_position = State()
+    waiting_for_role = State()
+
+
+MAIN_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="⚙️ Настройки")]],
+    resize_keyboard=True,
+)
+
+SETTINGS_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить пользователя")],
+        [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
+
+async def upsert_user_in_db(tg_id: int, username: str, position: str, role: str) -> None:
+    """Добавляет или обновляет пользователя в базе данных."""
+
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO users (tg_id, username, position, role)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (tg_id) DO UPDATE
+            SET username = EXCLUDED.username,
+                position = EXCLUDED.position,
+                role = EXCLUDED.role
+            """,
+            tg_id,
+            username,
+            position,
+            role,
+        )
+
+
 @dp.message(CommandStart())
 async def handle_start(message: Message) -> None:
     """Приветствие при запуске бота."""
-    await message.answer("👋 Привет! Для добавления пользователей используйте /adduser.")
+    await message.answer(
+        "👋 Привет! Нажмите «⚙️ Настройки», чтобы управлять пользователями.",
+        reply_markup=MAIN_MENU_KB,
+    )
+
+
+@dp.message(Command("settings"))
+@dp.message(F.text == "⚙️ Настройки")
+async def handle_settings(message: Message) -> None:
+    """Открывает меню настроек."""
+
+    await message.answer("⚙️ Настройки. Выберите действие:", reply_markup=SETTINGS_MENU_KB)
+
+
+@dp.message(F.text == "⬅️ Главное меню")
+async def handle_back_to_main(message: Message) -> None:
+    """Возвращает пользователя в главное меню."""
+
+    await message.answer("Главное меню.", reply_markup=MAIN_MENU_KB)
+
+
+@dp.message(F.text == "➕ Добавить пользователя")
+async def handle_add_user_button(message: Message, state: FSMContext) -> None:
+    """Запускает сценарий пошагового добавления пользователя."""
+
+    await state.set_state(AddUserStates.waiting_for_tg_id)
+    await message.answer(
+        "Введите Telegram ID пользователя (только цифры).",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+@dp.message(AddUserStates.waiting_for_tg_id)
+async def process_tg_id(message: Message, state: FSMContext) -> None:
+    """Сохраняет Telegram ID пользователя."""
+
+    try:
+        tg_id = int(message.text)
+    except (TypeError, ValueError):
+        await message.answer("ID должен состоять только из цифр. Повторите ввод.")
+        return
+
+    await state.update_data(tg_id=tg_id)
+    await state.set_state(AddUserStates.waiting_for_username)
+    await message.answer("Введите имя пользователя (username).")
+
+
+@dp.message(AddUserStates.waiting_for_username)
+async def process_username(message: Message, state: FSMContext) -> None:
+    """Сохраняет имя пользователя."""
+
+    username = message.text.strip()
+    if not username:
+        await message.answer("Имя не может быть пустым. Введите имя пользователя.")
+        return
+
+    await state.update_data(username=username)
+    await state.set_state(AddUserStates.waiting_for_position)
+    await message.answer("Введите должность пользователя.")
+
+
+@dp.message(AddUserStates.waiting_for_position)
+async def process_position(message: Message, state: FSMContext) -> None:
+    """Сохраняет должность пользователя."""
+
+    position = message.text.strip()
+    if not position:
+        await message.answer("Должность не может быть пустой. Введите должность пользователя.")
+        return
+
+    await state.update_data(position=position)
+    await state.set_state(AddUserStates.waiting_for_role)
+    await message.answer("Введите роль пользователя.")
+
+
+@dp.message(AddUserStates.waiting_for_role)
+async def process_role(message: Message, state: FSMContext) -> None:
+    """Завершает добавление пользователя и сохраняет данные."""
+
+    role = message.text.strip()
+    if not role:
+        await message.answer("Роль не может быть пустой. Введите роль пользователя.")
+        return
+
+    data = await state.get_data()
+    await state.clear()
+
+    try:
+        await upsert_user_in_db(
+            tg_id=data["tg_id"],
+            username=data["username"],
+            position=data["position"],
+            role=role,
+        )
+    except RuntimeError:
+        await message.answer(
+            "База данных недоступна. Попробуйте позже.",
+            reply_markup=SETTINGS_MENU_KB,
+        )
+        return
+
+    await message.answer(
+        "✅ Пользователь добавлен или обновлён:\n"
+        f"• ID: {data['tg_id']}\n"
+        f"• Имя: {data['username']}\n"
+        f"• Должность: {data['position']}\n"
+        f"• Роль: {role}",
+        reply_markup=SETTINGS_MENU_KB,
+    )
 
 
 @dp.message(Command("adduser"))
@@ -139,18 +300,7 @@ async def handle_add_user(message: Message, command: CommandObject) -> None:
         await message.answer("База данных недоступна. Попробуйте позже.")
         return
 
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO users (tg_id, username, position, role)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (tg_id) DO UPDATE
-            SET username = EXCLUDED.username,
-                position = EXCLUDED.position,
-                role = EXCLUDED.role
-            """,
-            tg_id, username, position, role,
-        )
+    await upsert_user_in_db(tg_id, username, position, role)
 
     await message.answer(
         f"✅ Пользователь добавлен или обновлён:\n"
