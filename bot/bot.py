@@ -208,6 +208,7 @@ USERS_MENU_KB = ReplyKeyboardMarkup(
 WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧱 Пластики")],
+        [KeyboardButton(text="⚙️ Настройки склада")],
         [KeyboardButton(text="⬅️ Главное меню")],
     ],
     resize_keyboard=True,
@@ -255,6 +256,7 @@ async def handle_test(message: Message) -> None:
 
 @dp.message(Command("settings"))
 @dp.message(F.text == "⚙️ Настройки")
+@dp.message(F.text == "⚙️ Настройки склада")
 async def handle_settings(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
