@@ -4,10 +4,10 @@ import asyncio
 import logging
 import os
 import shlex
-from typing import Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
-from aiogram import Bot, Dispatcher, F
+from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
@@ -15,6 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     KeyboardButton,
     Message,
+    TelegramObject,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
@@ -103,6 +104,9 @@ dp = Dispatcher()
 dp.startup.register(on_startup)
 dp.shutdown.register(on_shutdown)
 
+access_control_middleware = AccessControlMiddleware()
+dp.message.outer_middleware(access_control_middleware)
+
 
 class AddUserStates(StatesGroup):
     """Состояния машины для пошагового добавления пользователя."""
@@ -157,6 +161,49 @@ async def upsert_user_in_db(tg_id: int, username: str, position: str, role: str)
             position,
             role,
         )
+
+
+async def user_has_access(tg_id: int) -> bool:
+    """Проверяет, добавлен ли пользователь в базу данных."""
+
+    if db_pool is None:
+        logging.warning("Database pool is not initialised when checking access")
+        return False
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM users WHERE tg_id = $1",
+            tg_id,
+        )
+
+    return row is not None
+
+
+class AccessControlMiddleware(BaseMiddleware):
+    """Ограничивает доступ к боту только добавленным пользователям."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        user_id: Optional[int] = None
+
+        if isinstance(event, Message) and event.from_user:
+            user_id = event.from_user.id
+
+        if user_id is None:
+            return await handler(event, data)
+
+        if await user_has_access(user_id):
+            return await handler(event, data)
+
+        if isinstance(event, Message):
+            await event.answer(
+                "🚫 У вас нет доступа к этому боту. Обратитесь к администратору."
+            )
+        return None
 
 
 @dp.message(CommandStart())
