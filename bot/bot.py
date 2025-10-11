@@ -40,50 +40,39 @@ db_pool: Optional[asyncpg.Pool] = None
 
 # === Проверка доступа пользователей ===
 async def user_has_access(tg_id: int) -> bool:
-    """Проверяет, добавлен ли пользователь в базу данных."""
     if db_pool is None:
         logging.warning("Database pool is not initialised when checking access")
         return False
-
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT 1 FROM users WHERE tg_id = $1", tg_id)
     return row is not None
 
 
 async def user_is_admin(tg_id: int) -> bool:
-    """Проверяет, является ли пользователь администратором."""
     if db_pool is None:
         logging.warning("Database pool is not initialised when checking admin role")
         return False
-
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT role FROM users WHERE tg_id = $1", tg_id)
-
     if not row:
         return False
-
     role = (row["role"] or "").lower()
     return "админист" in role or "admin" in role
 
 
 async def ensure_admin_access(message: Message, state: Optional[FSMContext] = None) -> bool:
-    """Сообщает об ошибке, если у пользователя нет прав администратора."""
     if not message.from_user:
         return False
-
     if await user_is_admin(message.from_user.id):
         return True
-
     if state is not None:
         await state.clear()
-
     await message.answer("🚫 У вас недостаточно прав для управления настройками.", reply_markup=MAIN_MENU_KB)
     return False
 
 
 # === Мидлварь доступа ===
 class AccessControlMiddleware(BaseMiddleware):
-    """Ограничивает доступ к боту только добавленным пользователям."""
     async def __call__(
         self,
         handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -91,16 +80,12 @@ class AccessControlMiddleware(BaseMiddleware):
         data: Dict[str, Any],
     ) -> Any:
         user_id: Optional[int] = None
-
         if isinstance(event, Message) and event.from_user:
             user_id = event.from_user.id
-
         if user_id is None:
             return await handler(event, data)
-
         if await user_has_access(user_id):
             return await handler(event, data)
-
         if isinstance(event, Message):
             await event.answer("🚫 У вас нет доступа к этому боту. Обратитесь к администратору.")
         return None
@@ -108,14 +93,9 @@ class AccessControlMiddleware(BaseMiddleware):
 
 # === Инициализация базы данных ===
 async def init_database() -> None:
-    """Создаёт таблицу пользователей и добавляет администратора."""
     global db_pool
     db_pool = await asyncpg.create_pool(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASS,
-        database=DB_NAME,
+        host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, database=DB_NAME
     )
 
     async with db_pool.acquire() as conn:
@@ -185,7 +165,7 @@ class AddUserStates(StatesGroup):
 MAIN_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="Тест")],
-        [KeyboardButton(text="Склад")],
+        [KeyboardButton(text="🏢 Склад")],
     ],
     resize_keyboard=True,
 )
@@ -230,7 +210,6 @@ WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
 async def upsert_user_in_db(tg_id: int, username: str, position: str, role: str) -> None:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
-
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
@@ -248,10 +227,7 @@ async def upsert_user_in_db(tg_id: int, username: str, position: str, role: str)
 # === Команды ===
 @dp.message(CommandStart())
 async def handle_start(message: Message) -> None:
-    await message.answer(
-        "👋 Привет! Нажмите «⚙️ Настройки», чтобы управлять пользователями.",
-        reply_markup=MAIN_MENU_KB,
-    )
+    await message.answer("👋 Привет! Выберите действие:", reply_markup=MAIN_MENU_KB)
 
 
 @dp.message(F.text == "Тест")
@@ -286,9 +262,11 @@ async def handle_back_to_settings(message: Message) -> None:
     await handle_settings(message)
 
 
-@dp.message(F.text == "Склад")
+# === Склад ===
+@dp.message(F.text == "🏢 Склад")
 async def handle_warehouse_menu(message: Message) -> None:
     await message.answer("🏢 Склад. Выберите раздел:", reply_markup=WAREHOUSE_MENU_KB)
+
 
 @dp.message(F.text == "🧱 Пластики")
 async def handle_warehouse_plastics(message: Message) -> None:
@@ -325,6 +303,7 @@ async def handle_plastics_back(message: Message) -> None:
     await message.answer("🏢 Склад. Выберите раздел:", reply_markup=WAREHOUSE_MENU_KB)
 
 
+# === Пользователи ===
 @dp.message(F.text == "➕ Добавить пользователя")
 async def handle_add_user_button(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
@@ -342,7 +321,6 @@ async def process_tg_id(message: Message, state: FSMContext) -> None:
     except (TypeError, ValueError):
         await message.answer("ID должен состоять только из цифр. Повторите ввод.")
         return
-
     await state.update_data(tg_id=tg_id)
     await state.set_state(AddUserStates.waiting_for_username)
     await message.answer("Введите имя пользователя (username).")
@@ -382,16 +360,13 @@ async def process_role(message: Message, state: FSMContext) -> None:
     if not role:
         await message.answer("Роль не может быть пустой. Введите роль пользователя.")
         return
-
     data = await state.get_data()
     await state.clear()
-
     try:
         await upsert_user_in_db(data["tg_id"], data["username"], data["position"], role)
     except RuntimeError:
         await message.answer("База данных недоступна. Попробуйте позже.", reply_markup=SETTINGS_MENU_KB)
         return
-
     await message.answer(
         "✅ Пользователь добавлен или обновлён:\n"
         f"• ID: {data['tg_id']}\n"
@@ -412,11 +387,9 @@ async def handle_list_users(message: Message) -> None:
     except Exception:
         await message.answer("База данных недоступна. Попробуйте позже.", reply_markup=USERS_MENU_KB)
         return
-
     if not rows:
         await message.answer("Пока нет ни одного пользователя.", reply_markup=USERS_MENU_KB)
         return
-
     lines = [
         f"• ID: {r['tg_id']}\n  Имя: {r['username']}\n  Должность: {r['position']}\n  Роль: {r['role']}"
         for r in rows
