@@ -130,6 +130,16 @@ async def init_database() -> None:
                 )
                 """
             )
+            # Таблица типов пластиков
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plastic_material_types (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
             # Добавляем администратора
             await conn.execute(
                 """
@@ -180,6 +190,11 @@ class AddUserStates(StatesGroup):
     waiting_for_role = State()
 
 
+class ManagePlasticMaterialStates(StatesGroup):
+    waiting_for_new_material_name = State()
+    waiting_for_material_name_to_delete = State()
+
+
 # === Клавиатуры ===
 MAIN_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -223,6 +238,15 @@ WAREHOUSE_SETTINGS_MENU_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+WAREHOUSE_SETTINGS_PLASTIC_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить материал")],
+        [KeyboardButton(text="➖ Удалить материал")],
+        [KeyboardButton(text="⬅️ Назад к складу")],
+    ],
+    resize_keyboard=True,
+)
+
 WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить"), KeyboardButton(text="➖ Списать")],
@@ -232,6 +256,13 @@ WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
 )
+
+
+CANCEL_KB = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="❌ Отмена")]],
+    resize_keyboard=True,
+)
+
 
 
 # === Работа с БД ===
@@ -250,6 +281,75 @@ async def upsert_user_in_db(tg_id: int, username: str, position: str, role: str)
             """,
             tg_id, username, position, role,
         )
+
+
+async def fetch_plastic_material_types() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM plastic_material_types ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
+async def insert_plastic_material_type(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO plastic_material_types (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_plastic_material_type(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM plastic_material_types WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+# === Сервисные функции ===
+async def send_plastic_settings_overview(message: Message) -> None:
+    materials = await fetch_plastic_material_types()
+    if materials:
+        materials_list = "\n".join(f"• {item}" for item in materials)
+        text = (
+            "⚙️ Настройки склада → Пластик.\n\n"
+            "Доступные материалы для кнопок заполнения:\n"
+            f"{materials_list}"
+        )
+    else:
+        text = (
+            "⚙️ Настройки склада → Пластик.\n\n"
+            "Материалы ещё не добавлены. Используйте кнопки ниже, чтобы начать."
+        )
+    await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB)
+
+
+def format_materials_list(materials: list[str]) -> str:
+    if not materials:
+        return "—"
+    return "\n".join(f"• {item}" for item in materials)
+
+
+def build_materials_keyboard(materials: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for name in materials:
+        rows.append([KeyboardButton(text=name)])
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 # === Команды ===
@@ -297,6 +397,12 @@ async def handle_back_to_settings(message: Message) -> None:
     await handle_settings(message)
 
 
+@dp.message(F.text == "⬅️ Назад к складу")
+async def handle_back_to_warehouse(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await handle_warehouse_menu(message)
+
+
 # === Склад ===
 @dp.message(F.text == "🏢 Склад")
 async def handle_warehouse_menu(message: Message) -> None:
@@ -312,7 +418,85 @@ async def handle_warehouse_plastics(message: Message) -> None:
 async def handle_warehouse_settings_plastic(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
-    await message.answer("⚙️ Настройки склада → Пластик: опция пока в разработке.", reply_markup=WAREHOUSE_SETTINGS_MENU_KB)
+    await send_plastic_settings_overview(message)
+
+
+@dp.message(F.text == "➕ Добавить материал")
+async def handle_add_plastic_material_button(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManagePlasticMaterialStates.waiting_for_new_material_name)
+    materials = await fetch_plastic_material_types()
+    existing_text = format_materials_list(materials)
+    await message.answer(
+        "Введите название материала (например, Дибонд, Акрил, ПВХ).\n\n"
+        "Уже добавлены:\n"
+        f"{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_new_material_name)
+async def process_new_plastic_material(message: Message, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_plastic_material_type(name):
+        await message.answer(f"✅ Материал «{name}» добавлен.")
+    else:
+        await message.answer(
+            f"ℹ️ Материал «{name}» уже есть в списке.",
+        )
+    await state.clear()
+    await send_plastic_settings_overview(message)
+
+
+@dp.message(F.text == "➖ Удалить материал")
+async def handle_remove_plastic_material_button(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    materials = await fetch_plastic_material_types()
+    if not materials:
+        await message.answer(
+            "Список материалов пуст. Добавьте материалы перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManagePlasticMaterialStates.waiting_for_material_name_to_delete)
+    await message.answer(
+        "Выберите материал, который нужно удалить:",
+        reply_markup=build_materials_keyboard(materials),
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_material_name_to_delete)
+async def process_remove_plastic_material(message: Message, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_plastic_material_type(name):
+        await message.answer(f"🗑 Материал «{name}» удалён.")
+    else:
+        await message.answer(
+            f"ℹ️ Материал «{name}» не найден в списке.",
+        )
+    await state.clear()
+    await send_plastic_settings_overview(message)
+
+
+@dp.message(F.text == "❌ Отмена")
+async def handle_cancel(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_plastic_settings_overview(message)
 
 
 # === Пользователи ===

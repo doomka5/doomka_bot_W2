@@ -47,6 +47,15 @@ async def startup():
         )
         """
     )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plastic_material_types (
+            id SERIAL PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
     await conn.close()
 
 
