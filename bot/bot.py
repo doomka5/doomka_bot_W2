@@ -257,12 +257,10 @@ WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-
 CANCEL_KB = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="❌ Отмена")]],
     resize_keyboard=True,
 )
-
 
 
 # === Работа с БД ===
@@ -320,6 +318,20 @@ async def delete_plastic_material_type(name: str) -> bool:
     return result.endswith(" 1")
 
 
+def format_materials_list(materials: list[str]) -> str:
+    if not materials:
+        return "—"
+    return "\n".join(f"• {item}" for item in materials)
+
+
+def build_materials_keyboard(materials: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for name in materials:
+        rows.append([KeyboardButton(text=name)])
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 # === Сервисные функции ===
 async def send_plastic_settings_overview(message: Message) -> None:
     materials = await fetch_plastic_material_types()
@@ -327,13 +339,13 @@ async def send_plastic_settings_overview(message: Message) -> None:
         materials_list = "\n".join(f"• {item}" for item in materials)
         text = (
             "⚙️ Настройки склада → Пластик.\n\n"
-            "Доступные материалы для кнопок заполнения:\n"
+            "Доступные материалы:\n"
             f"{materials_list}"
         )
     else:
         text = (
             "⚙️ Настройки склада → Пластик.\n\n"
-            "Материалы ещё не добавлены. Используйте кнопки ниже, чтобы начать."
+            "Материалы ещё не добавлены. Используйте кнопки ниже."
         )
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB)
 
@@ -408,14 +420,15 @@ async def handle_warehouse_settings_plastic(message: Message) -> None:
 
 
 @dp.message(F.text == "➕ Добавить материал")
-async def handle_add_plastic_material_button(
-    message: Message, state: FSMContext
-) -> None:
+async def handle_add_plastic_material_button(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
         return
     await state.set_state(ManagePlasticMaterialStates.waiting_for_new_material_name)
+    materials = await fetch_plastic_material_types()
+    existing_text = format_materials_list(materials)
     await message.answer(
-        "Введите название материала (например, Дибонд, Акрил, ПВХ):",
+        "Введите название материала (например, Дибонд, Акрил, ПВХ).\n\n"
+        f"Уже добавлены:\n{existing_text}",
         reply_markup=CANCEL_KB,
     )
 
@@ -429,23 +442,27 @@ async def process_new_plastic_material(message: Message, state: FSMContext) -> N
     if await insert_plastic_material_type(name):
         await message.answer(f"✅ Материал «{name}» добавлен.")
     else:
-        await message.answer(
-            f"ℹ️ Материал «{name}» уже есть в списке.",
-        )
+        await message.answer(f"ℹ️ Материал «{name}» уже есть в списке.")
     await state.clear()
     await send_plastic_settings_overview(message)
 
 
 @dp.message(F.text == "➖ Удалить материал")
-async def handle_remove_plastic_material_button(
-    message: Message, state: FSMContext
-) -> None:
+async def handle_remove_plastic_material_button(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
+        return
+    materials = await fetch_plastic_material_types()
+    if not materials:
+        await message.answer(
+            "Список материалов пуст. Добавьте материалы перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        await state.clear()
         return
     await state.set_state(ManagePlasticMaterialStates.waiting_for_material_name_to_delete)
     await message.answer(
-        "Введите название материала, который нужно удалить:",
-        reply_markup=CANCEL_KB,
+        "Выберите материал, который нужно удалить:",
+        reply_markup=build_materials_keyboard(materials),
     )
 
 
@@ -458,9 +475,7 @@ async def process_remove_plastic_material(message: Message, state: FSMContext) -
     if await delete_plastic_material_type(name):
         await message.answer(f"🗑 Материал «{name}» удалён.")
     else:
-        await message.answer(
-            f"ℹ️ Материал «{name}» не найден в списке.",
-        )
+        await message.answer(f"ℹ️ Материал «{name}» не найден в списке.")
     await state.clear()
     await send_plastic_settings_overview(message)
 
@@ -473,13 +488,11 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     await send_plastic_settings_overview(message)
 
 
-# === Пользователи ===
-# ... (остальной код добавления и просмотра пользователей не менялся)
+# === Пользователи (добавление/просмотр) можно вернуть сюда позже ===
 
 
 async def main() -> None:
     """Запускает поллинг Telegram-бота."""
-
     bot = Bot(BOT_TOKEN)
     try:
         await dp.start_polling(bot)
