@@ -208,6 +208,7 @@ USERS_MENU_KB = ReplyKeyboardMarkup(
 WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧱 Пластики")],
+        [KeyboardButton(text="⚙️ Настройки")],
         [KeyboardButton(text="⬅️ Главное меню")],
     ],
     resize_keyboard=True,
