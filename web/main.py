@@ -66,6 +66,21 @@ async def startup():
         )
         """
     )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plastic_material_colors (
+            id SERIAL PRIMARY KEY,
+            material_id INTEGER NOT NULL REFERENCES plastic_material_types(id) ON DELETE CASCADE,
+            color TEXT NOT NULL
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS plastic_material_colors_material_id_color_idx
+        ON plastic_material_colors (material_id, LOWER(color))
+        """
+    )
     await conn.close()
 
 
