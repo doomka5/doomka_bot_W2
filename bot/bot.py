@@ -274,10 +274,19 @@ WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+CANCEL_TEXT = "❌ Отмена"
+
 CANCEL_KB = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="❌ Отмена")]],
+    keyboard=[[KeyboardButton(text=CANCEL_TEXT)]],
     resize_keyboard=True,
 )
+
+
+async def _process_cancel_if_requested(message: Message, state: FSMContext) -> bool:
+    if (message.text or "").strip() != CANCEL_TEXT:
+        return False
+    await handle_cancel(message, state)
+    return True
 
 
 # === Работа с БД ===
@@ -464,7 +473,7 @@ def build_materials_keyboard(materials: list[str]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for name in materials:
         rows.append([KeyboardButton(text=name)])
-    rows.append([KeyboardButton(text="❌ Отмена")])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -472,7 +481,7 @@ def build_thickness_keyboard(thicknesses: list[Decimal]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for value in thicknesses:
         rows.append([KeyboardButton(text=format_thickness_value(value))])
-    rows.append([KeyboardButton(text="❌ Отмена")])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -585,6 +594,8 @@ async def handle_add_plastic_material_button(message: Message, state: FSMContext
 
 @dp.message(ManagePlasticMaterialStates.waiting_for_new_material_name)
 async def process_new_plastic_material(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
     name = (message.text or "").strip()
     if not name:
         await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
@@ -618,6 +629,8 @@ async def handle_remove_plastic_material_button(message: Message, state: FSMCont
 
 @dp.message(ManagePlasticMaterialStates.waiting_for_material_name_to_delete)
 async def process_remove_plastic_material(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
     name = (message.text or "").strip()
     if not name:
         await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
@@ -655,6 +668,8 @@ async def handle_add_thickness_button(message: Message, state: FSMContext) -> No
 async def process_add_thickness_material_selection(
     message: Message, state: FSMContext
 ) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
     name = (message.text or "").strip()
     if not name:
         await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
@@ -681,6 +696,8 @@ async def process_add_thickness_material_selection(
 
 @dp.message(ManagePlasticMaterialStates.waiting_for_thickness_value_to_add)
 async def process_add_thickness_value(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
     data = await state.get_data()
     material = data.get("selected_material")
     if not material:
@@ -747,6 +764,8 @@ async def handle_remove_thickness_button(message: Message, state: FSMContext) ->
 async def process_remove_thickness_material_selection(
     message: Message, state: FSMContext
 ) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
     name = (message.text or "").strip()
     if not name:
         await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
@@ -783,6 +802,8 @@ async def process_remove_thickness_material_selection(
 
 @dp.message(ManagePlasticMaterialStates.waiting_for_thickness_value_to_delete)
 async def process_remove_thickness_value(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
     data = await state.get_data()
     material = data.get("selected_material")
     if not material:
@@ -819,7 +840,7 @@ async def process_remove_thickness_value(message: Message, state: FSMContext) ->
     await send_plastic_settings_overview(message)
 
 
-@dp.message(F.text == "❌ Отмена")
+@dp.message(F.text == CANCEL_TEXT)
 async def handle_cancel(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
         return
