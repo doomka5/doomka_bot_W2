@@ -192,9 +192,17 @@ async def close_database() -> None:
         db_pool = None
 
 # === Dispatcher и FSM ===
+async def on_startup(_: Bot) -> None:
+    await init_database()
+
+
+async def on_shutdown(_: Bot) -> None:
+    await close_database()
+
+
 dp = Dispatcher()
-dp.startup.register(lambda _: init_database())
-dp.shutdown.register(lambda _: close_database())
+dp.startup.register(on_startup)
+dp.shutdown.register(on_shutdown)
 dp.message.outer_middleware(AccessControlMiddleware())
 
 class AddUserStates(StatesGroup):
