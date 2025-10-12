@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
@@ -140,6 +141,16 @@ async def init_database() -> None:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plastic_material_thicknesses (
+                    id SERIAL PRIMARY KEY,
+                    material_id INTEGER NOT NULL REFERENCES plastic_material_types(id) ON DELETE CASCADE,
+                    thickness NUMERIC(10, 2) NOT NULL,
+                    UNIQUE(material_id, thickness)
+                )
+                """
+            )
             # Добавляем администратора
             await conn.execute(
                 """
@@ -193,6 +204,10 @@ class AddUserStates(StatesGroup):
 class ManagePlasticMaterialStates(StatesGroup):
     waiting_for_new_material_name = State()
     waiting_for_material_name_to_delete = State()
+    waiting_for_material_name_to_add_thickness = State()
+    waiting_for_thickness_value_to_add = State()
+    waiting_for_material_name_to_delete_thickness = State()
+    waiting_for_thickness_value_to_delete = State()
 
 
 # === Клавиатуры ===
@@ -242,6 +257,8 @@ WAREHOUSE_SETTINGS_PLASTIC_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить материал")],
         [KeyboardButton(text="➖ Удалить материал")],
+        [KeyboardButton(text="➕ Добавить толщину")],
+        [KeyboardButton(text="➖ Удалить толщину")],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -318,10 +335,129 @@ async def delete_plastic_material_type(name: str) -> bool:
     return result.endswith(" 1")
 
 
+async def fetch_materials_with_thicknesses() -> list[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT p.name,
+                   COALESCE(
+                       ARRAY_AGG(t.thickness ORDER BY t.thickness)
+                       FILTER (WHERE t.thickness IS NOT NULL),
+                       ARRAY[]::NUMERIC[]
+                   ) AS thicknesses
+            FROM plastic_material_types p
+            LEFT JOIN plastic_material_thicknesses t ON t.material_id = p.id
+            GROUP BY p.id
+            ORDER BY LOWER(p.name)
+            """
+        )
+    return [dict(row) for row in rows]
+
+
+async def fetch_material_thicknesses(material_name: str) -> list[Decimal]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT t.thickness
+            FROM plastic_material_thicknesses t
+            JOIN plastic_material_types p ON p.id = t.material_id
+            WHERE LOWER(p.name) = LOWER($1)
+            ORDER BY t.thickness
+            """,
+            material_name,
+        )
+    return [row["thickness"] for row in rows]
+
+
+async def insert_material_thickness(material_name: str, thickness: Decimal) -> str:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        material_id = await conn.fetchval(
+            "SELECT id FROM plastic_material_types WHERE LOWER(name) = LOWER($1)",
+            material_name,
+        )
+        if material_id is None:
+            return "material_not_found"
+        row = await conn.fetchrow(
+            """
+            INSERT INTO plastic_material_thicknesses (material_id, thickness)
+            VALUES ($1, $2)
+            ON CONFLICT (material_id, thickness) DO NOTHING
+            RETURNING id
+            """,
+            material_id,
+            thickness,
+        )
+        if row:
+            return "added"
+        return "exists"
+
+
+async def delete_material_thickness(material_name: str, thickness: Decimal) -> str:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        material_id = await conn.fetchval(
+            "SELECT id FROM plastic_material_types WHERE LOWER(name) = LOWER($1)",
+            material_name,
+        )
+        if material_id is None:
+            return "material_not_found"
+        result = await conn.execute(
+            """
+            DELETE FROM plastic_material_thicknesses
+            WHERE material_id = $1 AND thickness = $2
+            """,
+            material_id,
+            thickness,
+        )
+    if result.endswith(" 1"):
+        return "deleted"
+    return "not_found"
+
+
 def format_materials_list(materials: list[str]) -> str:
     if not materials:
         return "—"
     return "\n".join(f"• {item}" for item in materials)
+
+
+def format_thickness_value(thickness: Decimal) -> str:
+    as_str = format(thickness, "f").rstrip("0").rstrip(".")
+    if not as_str:
+        as_str = "0"
+    return f"{as_str} мм"
+
+
+def format_thicknesses_list(thicknesses: list[Decimal]) -> str:
+    if not thicknesses:
+        return "—"
+    return ", ".join(format_thickness_value(value) for value in thicknesses)
+
+
+def parse_thickness_input(raw_text: str) -> Optional[Decimal]:
+    if raw_text is None:
+        return None
+    cleaned = raw_text.strip().lower()
+    for suffix in ("мм", "mm"):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)]
+            break
+    cleaned = cleaned.replace(" ", "").replace(",", ".")
+    if not cleaned:
+        return None
+    try:
+        value = Decimal(cleaned)
+    except (InvalidOperation, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value.quantize(Decimal("0.01"))
 
 
 def build_materials_keyboard(materials: list[str]) -> ReplyKeyboardMarkup:
@@ -332,14 +468,28 @@ def build_materials_keyboard(materials: list[str]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_thickness_keyboard(thicknesses: list[Decimal]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for value in thicknesses:
+        rows.append([KeyboardButton(text=format_thickness_value(value))])
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 # === Сервисные функции ===
 async def send_plastic_settings_overview(message: Message) -> None:
-    materials = await fetch_plastic_material_types()
+    materials = await fetch_materials_with_thicknesses()
     if materials:
-        materials_list = "\n".join(f"• {item}" for item in materials)
+        lines = []
+        for material in materials:
+            name = material["name"]
+            thicknesses = material.get("thicknesses") or []
+            formatted_thicknesses = format_thicknesses_list(thicknesses)
+            lines.append(f"• {name} — {formatted_thicknesses}")
+        materials_list = "\n".join(lines)
         text = (
             "⚙️ Настройки склада → Пластик.\n\n"
-            "Доступные материалы:\n"
+            "Доступные материалы и толщины:\n"
             f"{materials_list}"
         )
     else:
@@ -476,6 +626,195 @@ async def process_remove_plastic_material(message: Message, state: FSMContext) -
         await message.answer(f"🗑 Материал «{name}» удалён.")
     else:
         await message.answer(f"ℹ️ Материал «{name}» не найден в списке.")
+    await state.clear()
+    await send_plastic_settings_overview(message)
+
+
+@dp.message(F.text == "➕ Добавить толщину")
+async def handle_add_thickness_button(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    materials = await fetch_plastic_material_types()
+    if not materials:
+        await message.answer(
+            "Сначала добавьте материал, чтобы можно было указать толщины.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManagePlasticMaterialStates.waiting_for_material_name_to_add_thickness
+    )
+    await message.answer(
+        "Выберите материал, для которого нужно добавить толщину:",
+        reply_markup=build_materials_keyboard(materials),
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_material_name_to_add_thickness)
+async def process_add_thickness_material_selection(
+    message: Message, state: FSMContext
+) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    materials = await fetch_plastic_material_types()
+    match = next((item for item in materials if item.lower() == name.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Такой материал не найден. Выберите один из списка.",
+            reply_markup=build_materials_keyboard(materials),
+        )
+        return
+    await state.update_data(selected_material=match)
+    await state.set_state(ManagePlasticMaterialStates.waiting_for_thickness_value_to_add)
+    existing_thicknesses = await fetch_material_thicknesses(match)
+    existing_text = format_thicknesses_list(existing_thicknesses)
+    await message.answer(
+        "Введите толщину в миллиметрах (например, 3 или 3.5).\n"
+        "Допустимы значения с точкой или запятой, можно указывать 'мм'.\n\n"
+        f"Текущие толщины для «{match}»: {existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_thickness_value_to_add)
+async def process_add_thickness_value(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    material = data.get("selected_material")
+    if not material:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Материал не найден. Попробуйте начать заново.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        return
+    value = parse_thickness_input(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Не удалось распознать толщину. Укажите число, например 3 или 3.5 мм.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    status = await insert_material_thickness(material, value)
+    if status == "material_not_found":
+        await message.answer(
+            "ℹ️ Материал больше не существует. Попробуйте снова.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    elif status == "exists":
+        await message.answer(
+            f"ℹ️ Толщина {format_thickness_value(value)} уже добавлена для «{material}».",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    else:
+        await message.answer(
+            f"✅ Толщина {format_thickness_value(value)} добавлена для «{material}».",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    await state.clear()
+    await send_plastic_settings_overview(message)
+
+
+@dp.message(F.text == "➖ Удалить толщину")
+async def handle_remove_thickness_button(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    materials = await fetch_materials_with_thicknesses()
+    materials_with_data = [
+        item["name"]
+        for item in materials
+        if item.get("thicknesses") and len(item["thicknesses"]) > 0
+    ]
+    if not materials_with_data:
+        await message.answer(
+            "Пока нет материалов с толщинами для удаления.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManagePlasticMaterialStates.waiting_for_material_name_to_delete_thickness
+    )
+    await message.answer(
+        "Выберите материал, у которого нужно удалить толщину:",
+        reply_markup=build_materials_keyboard(materials_with_data),
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_material_name_to_delete_thickness)
+async def process_remove_thickness_material_selection(
+    message: Message, state: FSMContext
+) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    materials = await fetch_materials_with_thicknesses()
+    match = next(
+        (
+            item
+            for item in materials
+            if item["name"].lower() == name.lower()
+            and item.get("thicknesses")
+            and len(item["thicknesses"]) > 0
+        ),
+        None,
+    )
+    if match is None:
+        options = [
+            item["name"]
+            for item in materials
+            if item.get("thicknesses") and len(item["thicknesses"]) > 0
+        ]
+        await message.answer(
+            "ℹ️ Материал не найден или у него нет толщин. Выберите из списка.",
+            reply_markup=build_materials_keyboard(options),
+        )
+        return
+    await state.update_data(selected_material=match["name"])
+    await state.set_state(ManagePlasticMaterialStates.waiting_for_thickness_value_to_delete)
+    await message.answer(
+        "Выберите толщину, которую нужно удалить:",
+        reply_markup=build_thickness_keyboard(match["thicknesses"]),
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_thickness_value_to_delete)
+async def process_remove_thickness_value(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    material = data.get("selected_material")
+    if not material:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Материал не найден. Попробуйте начать заново.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        return
+    value = parse_thickness_input(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Не удалось распознать толщину. Укажите число, например 3 или 3.5 мм.",
+            reply_markup=build_thickness_keyboard(await fetch_material_thicknesses(material)),
+        )
+        return
+    status = await delete_material_thickness(material, value)
+    if status == "material_not_found":
+        await message.answer(
+            "ℹ️ Материал больше не существует. Попробуйте снова.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    elif status == "deleted":
+        await message.answer(
+            f"🗑 Толщина {format_thickness_value(value)} удалена у «{material}».",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    else:
+        await message.answer(
+            f"ℹ️ Толщина {format_thickness_value(value)} не найдена у «{material}».",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
     await state.clear()
     await send_plastic_settings_overview(message)
 

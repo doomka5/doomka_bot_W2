@@ -56,6 +56,16 @@ async def startup():
         )
         """
     )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plastic_material_thicknesses (
+            id SERIAL PRIMARY KEY,
+            material_id INTEGER NOT NULL REFERENCES plastic_material_types(id) ON DELETE CASCADE,
+            thickness NUMERIC(10, 2) NOT NULL,
+            UNIQUE(material_id, thickness)
+        )
+        """
+    )
     await conn.close()
 
 
