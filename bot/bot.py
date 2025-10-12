@@ -82,11 +82,43 @@ class AccessControlMiddleware(BaseMiddleware):
         return None
 
 # === Инициализация базы данных ===
-async def init_database() -> None:
+async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None:
+    """Initialise database connection pool with retry logic.
+
+    When the application starts inside Docker, the PostgreSQL container might
+    need a couple of seconds to accept incoming connections. Without retries
+    ``asyncpg.create_pool`` raises an exception and the bot stops before
+    polling starts. To make the startup robust we retry the connection several
+    times before propagating the error.
+    """
+
     global db_pool
-    db_pool = await asyncpg.create_pool(
-        host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, database=DB_NAME
-    )
+
+    if db_pool is not None:
+        return
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            db_pool = await asyncpg.create_pool(
+                host=DB_HOST,
+                port=DB_PORT,
+                user=DB_USER,
+                password=DB_PASS,
+                database=DB_NAME,
+            )
+            break
+        except Exception as exc:  # pragma: no cover - logged and re-raised
+            logging.warning(
+                "Failed to connect to PostgreSQL (attempt %s/%s): %s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+            if attempt == max_attempts:
+                raise
+            await asyncio.sleep(retry_delay)
+
+    assert db_pool is not None  # for type-checkers
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
@@ -160,9 +192,17 @@ async def close_database() -> None:
         db_pool = None
 
 # === Dispatcher и FSM ===
+async def on_startup() -> None:
+    await init_database()
+
+
+async def on_shutdown() -> None:
+    await close_database()
+
+
 dp = Dispatcher()
-dp.startup.register(lambda _: init_database())
-dp.shutdown.register(lambda _: close_database())
+dp.startup.register(on_startup)
+dp.shutdown.register(on_shutdown)
 dp.message.outer_middleware(AccessControlMiddleware())
 
 class AddUserStates(StatesGroup):
