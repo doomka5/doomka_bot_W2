@@ -17,6 +17,8 @@ DB_SETTINGS = {
 async def startup():
     """Создание необходимых таблиц (если не существуют)."""
     conn = await asyncpg.connect(**DB_SETTINGS)
+
+    # --- Таблица пользователей ---
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -29,6 +31,8 @@ async def startup():
         )
         """
     )
+
+    # --- Таблица склада ---
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS warehouse_plastics (
@@ -47,6 +51,8 @@ async def startup():
         )
         """
     )
+
+    # --- Таблица материалов ---
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS plastic_material_types (
@@ -56,6 +62,8 @@ async def startup():
         )
         """
     )
+
+    # --- Таблица толщин ---
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS plastic_material_thicknesses (
@@ -66,6 +74,8 @@ async def startup():
         )
         """
     )
+
+    # --- Таблица цветов ---
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS plastic_material_colors (
@@ -76,6 +86,7 @@ async def startup():
         )
         """
     )
+
     await conn.close()
 
 
