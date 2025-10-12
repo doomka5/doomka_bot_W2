@@ -18,7 +18,6 @@ from aiogram.types import (
     Message,
     TelegramObject,
     ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +35,7 @@ DB_PASS = os.getenv("DB_PASS", "botpass")
 
 db_pool: Optional[asyncpg.Pool] = None
 
+
 # === Проверка доступа пользователей ===
 async def user_has_access(tg_id: int) -> bool:
     if db_pool is None:
@@ -43,6 +43,7 @@ async def user_has_access(tg_id: int) -> bool:
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT 1 FROM users WHERE tg_id = $1", tg_id)
     return row is not None
+
 
 async def user_is_admin(tg_id: int) -> bool:
     if db_pool is None:
@@ -54,6 +55,7 @@ async def user_is_admin(tg_id: int) -> bool:
     role = (row["role"] or "").lower()
     return "админист" in role or "admin" in role
 
+
 async def ensure_admin_access(message: Message, state: Optional[FSMContext] = None) -> bool:
     if not message.from_user:
         return False
@@ -63,6 +65,7 @@ async def ensure_admin_access(message: Message, state: Optional[FSMContext] = No
         await state.clear()
     await message.answer("🚫 У вас недостаточно прав для управления настройками.", reply_markup=MAIN_MENU_KB)
     return False
+
 
 # === Middleware ===
 class AccessControlMiddleware(BaseMiddleware):
@@ -81,17 +84,10 @@ class AccessControlMiddleware(BaseMiddleware):
             await event.answer("🚫 У вас нет доступа к этому боту. Обратитесь к администратору.")
         return None
 
+
 # === Инициализация базы данных ===
 async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None:
-    """Initialise database connection pool with retry logic.
-
-    When the application starts inside Docker, the PostgreSQL container might
-    need a couple of seconds to accept incoming connections. Without retries
-    ``asyncpg.create_pool`` raises an exception and the bot stops before
-    polling starts. To make the startup robust we retry the connection several
-    times before propagating the error.
-    """
-
+    """Создание пула подключений PostgreSQL с повторными попытками."""
     global db_pool
 
     if db_pool is not None:
@@ -107,9 +103,9 @@ async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None
                 database=DB_NAME,
             )
             break
-        except Exception as exc:  # pragma: no cover - logged and re-raised
+        except Exception as exc:
             logging.warning(
-                "Failed to connect to PostgreSQL (attempt %s/%s): %s",
+                "❌ Не удалось подключиться к PostgreSQL (попытка %s/%s): %s",
                 attempt,
                 max_attempts,
                 exc,
@@ -118,10 +114,11 @@ async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None
                 raise
             await asyncio.sleep(retry_delay)
 
-    assert db_pool is not None  # for type-checkers
+    assert db_pool is not None
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
+            # Таблица пользователей
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -133,6 +130,7 @@ async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None
                 )
             """)
 
+            # Материалы
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS plastic_material_types (
                     id SERIAL PRIMARY KEY,
@@ -141,6 +139,7 @@ async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None
                 )
             """)
 
+            # Толщины
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS plastic_material_thicknesses (
                     id SERIAL PRIMARY KEY,
@@ -150,6 +149,7 @@ async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None
                 )
             """)
 
+            # Цвета
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS plastic_material_colors (
                     id SERIAL PRIMARY KEY,
@@ -159,6 +159,7 @@ async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None
                 )
             """)
 
+            # Склад
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS warehouse_plastics (
                     id SERIAL PRIMARY KEY,
@@ -176,6 +177,7 @@ async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None
                 )
             """)
 
+            # Администратор
             await conn.execute("""
                 INSERT INTO users (tg_id, username, position, role)
                 VALUES ($1, $2, $3, $4)
@@ -185,31 +187,40 @@ async def init_database(max_attempts: int = 5, retry_delay: float = 2.0) -> None
                     role = EXCLUDED.role
             """, 37352491, "DooMka", "Администратор", "администратор с полными правами и доступом")
 
+
 async def close_database() -> None:
+    """Закрывает пул подключений."""
     global db_pool
     if db_pool:
         await db_pool.close()
         db_pool = None
 
-# === Dispatcher и FSM ===
-async def on_startup() -> None:
+
+# === События старта и остановки ===
+async def on_startup(bot: Bot) -> None:
     await init_database()
+    logging.info("✅ Бот запущен и подключён к базе данных.")
 
 
-async def on_shutdown() -> None:
+async def on_shutdown(bot: Bot) -> None:
     await close_database()
+    logging.info("🛑 Бот остановлен, соединение с БД закрыто.")
 
 
+# === Dispatcher ===
 dp = Dispatcher()
 dp.startup.register(on_startup)
 dp.shutdown.register(on_shutdown)
 dp.message.outer_middleware(AccessControlMiddleware())
 
+
+# === FSM ===
 class AddUserStates(StatesGroup):
     waiting_for_tg_id = State()
     waiting_for_username = State()
     waiting_for_position = State()
     waiting_for_role = State()
+
 
 # === Клавиатуры ===
 MAIN_MENU_KB = ReplyKeyboardMarkup(
@@ -233,7 +244,8 @@ WAREHOUSE_SETTINGS_PLASTIC_KB = ReplyKeyboardMarkup(
 CANCEL_TEXT = "❌ Отмена"
 CANCEL_KB = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=CANCEL_TEXT)]], resize_keyboard=True)
 
-# === Работа с БД: выборки и вставки ===
+
+# === Работа с БД ===
 async def fetch_materials_with_attributes() -> list[dict[str, Any]]:
     if db_pool is None:
         raise RuntimeError("Database not initialized")
@@ -241,22 +253,29 @@ async def fetch_materials_with_attributes() -> list[dict[str, Any]]:
         rows = await conn.fetch("""
             SELECT
                 p.name,
-                COALESCE((SELECT ARRAY_AGG(t.thickness ORDER BY t.thickness) FROM plastic_material_thicknesses t WHERE t.material_id=p.id), '{}') AS thicknesses,
-                COALESCE((SELECT ARRAY_AGG(c.color ORDER BY c.color) FROM plastic_material_colors c WHERE c.material_id=p.id), '{}') AS colors
+                COALESCE((SELECT ARRAY_AGG(t.thickness ORDER BY t.thickness)
+                          FROM plastic_material_thicknesses t
+                          WHERE t.material_id = p.id), '{}') AS thicknesses,
+                COALESCE((SELECT ARRAY_AGG(c.color ORDER BY c.color)
+                          FROM plastic_material_colors c
+                          WHERE c.material_id = p.id), '{}') AS colors
             FROM plastic_material_types p
             ORDER BY LOWER(p.name)
         """)
     return [dict(row) for row in rows]
+
 
 def format_thicknesses_list(thicknesses: list[Decimal]) -> str:
     if not thicknesses:
         return "—"
     return ", ".join(f"{t} мм" for t in thicknesses)
 
+
 def format_colors_list(colors: list[str]) -> str:
     if not colors:
         return "—"
     return ", ".join(colors)
+
 
 async def send_plastic_settings_overview(message: Message) -> None:
     materials = await fetch_materials_with_attributes()
@@ -271,29 +290,35 @@ async def send_plastic_settings_overview(message: Message) -> None:
         text = "⚙️ Настройки склада → Пластик.\n\nМатериалы ещё не добавлены."
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB)
 
+
 # === Команды ===
 @dp.message(CommandStart())
 async def handle_start(message: Message) -> None:
     await message.answer("👋 Привет! Выберите действие:", reply_markup=MAIN_MENU_KB)
+
 
 @dp.message(F.text == "⚙️ Настройки")
 async def handle_settings(message: Message) -> None:
     if await ensure_admin_access(message):
         await message.answer("⚙️ Настройки склада. Выберите действие:", reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB)
 
+
 @dp.message(F.text == "🏢 Склад")
 async def handle_warehouse(message: Message) -> None:
     await message.answer("🏢 Раздел «Склад» находится в разработке.", reply_markup=MAIN_MENU_KB)
+
 
 @dp.message(F.text == CANCEL_TEXT)
 async def handle_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await send_plastic_settings_overview(message)
 
+
 # === Запуск ===
 async def main() -> None:
     bot = Bot(BOT_TOKEN)
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
