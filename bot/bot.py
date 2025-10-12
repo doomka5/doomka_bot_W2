@@ -213,7 +213,11 @@ class ManagePlasticMaterialStates(StatesGroup):
 # === Клавиатуры ===
 MAIN_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="Тест")],
+        [
+            KeyboardButton(text="⚙️ Настройки"),
+            KeyboardButton(text="Тест"),
+            KeyboardButton(text="Тест 2"),
+        ],
         [KeyboardButton(text="🏢 Склад")],
     ],
     resize_keyboard=True,
@@ -518,6 +522,11 @@ async def handle_start(message: Message) -> None:
 @dp.message(F.text == "Тест")
 async def handle_test(message: Message) -> None:
     await message.answer("тест ок")
+
+
+@dp.message(F.text == "Тест 2")
+async def handle_test_two(message: Message) -> None:
+    await message.answer("тест 2 ок")
 
 
 @dp.message(Command("settings"))
