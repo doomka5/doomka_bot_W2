@@ -43,8 +43,15 @@ async def startup():
             comment TEXT,
             employee_id BIGINT,
             employee_name TEXT,
-            arrival_date DATE
+            arrival_date DATE,
+            arrival_at TIMESTAMPTZ
         )
+        """
+    )
+    await conn.execute(
+        """
+        ALTER TABLE warehouse_plastics
+        ADD COLUMN IF NOT EXISTS arrival_at TIMESTAMPTZ
         """
     )
     await conn.execute(

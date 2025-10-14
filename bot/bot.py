@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -21,6 +21,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
+from zoneinfo import ZoneInfo
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,6 +37,8 @@ DB_USER = os.getenv("DB_USER", "botuser")
 DB_PASS = os.getenv("DB_PASS", "botpass")
 
 db_pool: Optional[asyncpg.Pool] = None
+
+WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
 
 # === Проверка доступа пользователей ===
@@ -128,8 +131,15 @@ async def init_database() -> None:
                     comment TEXT,
                     employee_id BIGINT,
                     employee_name TEXT,
-                    arrival_date DATE
+                    arrival_date DATE,
+                    arrival_at TIMESTAMPTZ
                 )
+                """
+            )
+            await conn.execute(
+                """
+                ALTER TABLE warehouse_plastics
+                ADD COLUMN IF NOT EXISTS arrival_at TIMESTAMPTZ
                 """
             )
             # Таблица типов пластиков
@@ -657,6 +667,7 @@ async def insert_warehouse_plastic_record(
 ) -> None:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
+    now_warsaw = datetime.now(WARSAW_TZ)
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
@@ -671,9 +682,10 @@ async def insert_warehouse_plastic_record(
                 comment,
                 employee_id,
                 employee_name,
-                arrival_date
+                arrival_date,
+                arrival_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             """,
             article,
             material,
@@ -685,7 +697,8 @@ async def insert_warehouse_plastic_record(
             comment,
             employee_id,
             employee_name,
-            date.today(),
+            now_warsaw.date(),
+            now_warsaw,
         )
 
 
