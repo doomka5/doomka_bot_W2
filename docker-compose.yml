@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  postgres_bot:
+    image: postgres:15
+    container_name: postgres_bot
+    environment:
+      POSTGRES_DB: botdb
+      POSTGRES_USER: botuser
+      POSTGRES_PASSWORD: botpass
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    networks:
+      - botnet
+    restart: always
+    ports:
+      - "5432:5432"
+
+  telegram_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram_bot_v2
+    environment:
+      BOT_TOKEN: "8429030887:AAH2xxAGtNsuejvzjyzzj3LXED2BdiK2V4k"
+      DB_HOST: postgres_bot
+      DB_PORT: 5432
+      DB_NAME: botdb
+      DB_USER: botuser
+      DB_PASS: botpass
+    depends_on:
+      - postgres_bot
+    networks:
+      - botnet
+    restart: always
+
+  fastapi_web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: fastapi_web
+    command: uvicorn main:app --host 0.0.0.0 --port 8181
+    environment:
+      DB_HOST: postgres_bot
+      DB_PORT: 5432
+      DB_NAME: botdb
+      DB_USER: botuser
+      DB_PASS: botpass
+    ports:
+      - "8181:8181"
+    depends_on:
+      - postgres_bot
+    networks:
+      - botnet
+    restart: always
+
+networks:
+  botnet:
+    driver: bridge
