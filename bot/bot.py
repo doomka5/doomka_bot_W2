@@ -257,6 +257,10 @@ class AddWarehousePlasticStates(StatesGroup):
     waiting_for_comment = State()
 
 
+class SearchWarehousePlasticStates(StatesGroup):
+    waiting_for_query = State()
+
+
 # === Клавиатуры ===
 MAIN_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -387,6 +391,11 @@ async def _cancel_add_plastic_flow(message: Message, state: FSMContext) -> None:
     await message.answer(
         "❌ Добавление пластика отменено.", reply_markup=WAREHOUSE_PLASTICS_KB
     )
+
+
+async def _cancel_search_plastic_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("❌ Поиск отменён.", reply_markup=WAREHOUSE_PLASTICS_KB)
 
 
 # === Работа с БД ===
@@ -664,12 +673,12 @@ async def insert_warehouse_plastic_record(
     comment: Optional[str],
     employee_id: Optional[int],
     employee_name: Optional[str],
-) -> None:
+) -> Dict[str, Any]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
     now_warsaw = datetime.now(WARSAW_TZ)
     async with db_pool.acquire() as conn:
-        await conn.execute(
+        row = await conn.fetchrow(
             """
             INSERT INTO warehouse_plastics (
                 article,
@@ -686,6 +695,20 @@ async def insert_warehouse_plastic_record(
                 arrival_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            RETURNING
+                id,
+                article,
+                material,
+                thickness,
+                color,
+                length,
+                width,
+                warehouse,
+                comment,
+                employee_id,
+                employee_name,
+                arrival_date,
+                arrival_at
             """,
             article,
             material,
@@ -700,6 +723,43 @@ async def insert_warehouse_plastic_record(
             now_warsaw.date(),
             now_warsaw,
         )
+    if row is None:
+        return {}
+    return dict(row)
+
+
+async def search_warehouse_plastic_records(query: str, limit: int = 5) -> list[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    pattern = f"%{query}%"
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                id,
+                article,
+                material,
+                thickness,
+                color,
+                length,
+                width,
+                warehouse,
+                comment,
+                employee_name,
+                arrival_at
+            FROM warehouse_plastics
+            WHERE article ILIKE $1
+               OR material ILIKE $1
+               OR color ILIKE $1
+               OR warehouse ILIKE $1
+               OR comment ILIKE $1
+            ORDER BY arrival_at DESC NULLS LAST, id DESC
+            LIMIT $2
+            """,
+            pattern,
+            limit,
+        )
+    return [dict(row) for row in rows]
 
 
 def format_materials_list(materials: list[str]) -> str:
@@ -710,6 +770,15 @@ def format_materials_list(materials: list[str]) -> str:
 
 def format_thickness_value(thickness: Decimal) -> str:
     as_str = format(thickness, "f").rstrip("0").rstrip(".")
+    if not as_str:
+        as_str = "0"
+    return f"{as_str} мм"
+
+
+def format_dimension_value(value: Optional[Decimal]) -> str:
+    if value is None:
+        return "—"
+    as_str = format(value, "f").rstrip("0").rstrip(".")
     if not as_str:
         as_str = "0"
     return f"{as_str} мм"
@@ -731,6 +800,31 @@ def format_storage_locations_list(locations: list[str]) -> str:
     if not locations:
         return "—"
     return "\n".join(f"• {item}" for item in locations)
+
+
+def format_plastic_record_for_message(record: Dict[str, Any]) -> str:
+    thickness = record.get("thickness")
+    arrival_at = record.get("arrival_at")
+    if arrival_at:
+        try:
+            arrival_local = arrival_at.astimezone(WARSAW_TZ)
+        except Exception:
+            arrival_local = arrival_at
+        arrival_text = arrival_local.strftime("%Y-%m-%d %H:%M")
+    else:
+        arrival_text = "—"
+    return (
+        f"Артикул: {record.get('article') or '—'}\n"
+        f"Материал: {record.get('material') or '—'}\n"
+        f"Толщина: {format_thickness_value(thickness) if thickness is not None else '—'}\n"
+        f"Цвет: {record.get('color') or '—'}\n"
+        f"Длина: {format_dimension_value(record.get('length'))}\n"
+        f"Ширина: {format_dimension_value(record.get('width'))}\n"
+        f"Склад: {record.get('warehouse') or '—'}\n"
+        f"Комментарий: {record.get('comment') or '—'}\n"
+        f"Добавил: {record.get('employee_name') or '—'}\n"
+        f"Добавлено: {arrival_text}"
+    )
 
 
 def parse_thickness_input(raw_text: str) -> Optional[Decimal]:
@@ -911,6 +1005,44 @@ async def handle_warehouse_menu(message: Message) -> None:
 @dp.message(F.text == "🧱 Пластики")
 async def handle_warehouse_plastics(message: Message) -> None:
     await message.answer("📦 Раздел «Пластики». Выберите действие:", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+@dp.message(F.text == "🔍 Найти")
+async def handle_search_warehouse_plastic(message: Message, state: FSMContext) -> None:
+    await state.set_state(SearchWarehousePlasticStates.waiting_for_query)
+    await message.answer(
+        "Введите часть артикула, материала, цвета или комментария для поиска",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(SearchWarehousePlasticStates.waiting_for_query)
+async def process_search_warehouse_plastic(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_plastic_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Запрос не может быть пустым. Введите текст для поиска.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    results = await search_warehouse_plastic_records(text, limit=5)
+    if not results:
+        await message.answer(
+            "Ничего не найдено. Попробуйте другой запрос.", reply_markup=CANCEL_KB
+        )
+        return
+    formatted = "\n\n".join(format_plastic_record_for_message(item) for item in results)
+    await message.answer(
+        f"🔍 Найдено записей: {len(results)}\n\n{formatted}",
+        reply_markup=CANCEL_KB,
+    )
+    await message.answer(
+        "Введите новый запрос для продолжения поиска или нажмите «❌ Отмена».",
+        reply_markup=CANCEL_KB,
+    )
 
 
 @dp.message(F.text == "➕ Добавить")
@@ -1136,7 +1268,7 @@ async def process_plastic_comment(message: Message, state: FSMContext) -> None:
         return
     employee_id = message.from_user.id if message.from_user else None
     employee_name = message.from_user.full_name if message.from_user else None
-    await insert_warehouse_plastic_record(
+    record = await insert_warehouse_plastic_record(
         article=article,
         material=material,
         thickness=thickness,
@@ -1149,7 +1281,20 @@ async def process_plastic_comment(message: Message, state: FSMContext) -> None:
         employee_name=employee_name,
     )
     await state.clear()
-    summary_comment = comment if comment else "—"
+    summary_comment = (record.get("comment") if record else comment) or "—"
+    if record and record.get("employee_name"):
+        summary_employee = record.get("employee_name") or "—"
+    else:
+        summary_employee = employee_name or "—"
+    arrival_at = record.get("arrival_at") if record else None
+    if arrival_at:
+        try:
+            arrival_local = arrival_at.astimezone(WARSAW_TZ)
+        except Exception:
+            arrival_local = arrival_at
+        arrival_formatted = arrival_local.strftime("%Y-%m-%d %H:%M")
+    else:
+        arrival_formatted = datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M")
     await message.answer(
         "✅ Пластик добавлен на склад.\n\n"
         f"Артикул: {article}\n"
@@ -1159,7 +1304,9 @@ async def process_plastic_comment(message: Message, state: FSMContext) -> None:
         f"Длина: {length} мм\n"
         f"Ширина: {width} мм\n"
         f"Место хранения: {storage}\n"
-        f"Комментарий: {summary_comment}",
+        f"Комментарий: {summary_comment}\n"
+        f"Добавил: {summary_employee}\n"
+        f"Добавлено: {arrival_formatted}",
         reply_markup=WAREHOUSE_PLASTICS_KB,
     )
 
