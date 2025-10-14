@@ -217,7 +217,6 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
             KeyboardButton(text="⚙️ Настройки"),
             KeyboardButton(text="Тест"),
             KeyboardButton(text="Тест 2"),
-            KeyboardButton(text="Тест 3"),
         ],
         [KeyboardButton(text="🏢 Склад")],
     ],
@@ -528,11 +527,6 @@ async def handle_test(message: Message) -> None:
 @dp.message(F.text == "Тест 2")
 async def handle_test_two(message: Message) -> None:
     await message.answer("тест 2 ок")
-
-
-@dp.message(F.text == "Тест 3")
-async def handle_test_three(message: Message) -> None:
-    await message.answer("тест 3")
 
 
 @dp.message(Command("settings"))
