@@ -1,4 +1,7 @@
+import html
+
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 import asyncpg
 import os
 
@@ -104,3 +107,107 @@ async def root():
     )
     await conn.close()
     return {"users": [dict(r) for r in rows]}
+
+
+@app.get("/plastics", response_class=HTMLResponse)
+async def plastics_page() -> HTMLResponse:
+    """Выводит страницу со списком добавленных пластиков."""
+    conn = await asyncpg.connect(**DB_SETTINGS)
+    records = await conn.fetch(
+        """
+        SELECT
+            article,
+            material,
+            thickness,
+            color,
+            length,
+            width,
+            warehouse,
+            comment,
+            employee_name,
+            arrival_at
+        FROM warehouse_plastics
+        ORDER BY arrival_at DESC NULLS LAST, id DESC
+        """
+    )
+    await conn.close()
+
+    def _format_decimal(value):
+        if value is None:
+            return "—"
+        as_str = format(value, "f").rstrip("0").rstrip(".")
+        return as_str or "0"
+
+    if records:
+        rows_html = []
+        for record in records:
+            arrival_at = record["arrival_at"]
+            if arrival_at:
+                arrival_tz = (
+                    arrival_at.astimezone()
+                    if getattr(arrival_at, "tzinfo", None)
+                    else arrival_at
+                )
+                arrival_formatted = arrival_tz.strftime("%Y-%m-%d %H:%M")
+            else:
+                arrival_formatted = "—"
+            comment = record["comment"] or "—"
+            rows_html.append(
+                "<tr>"
+                f"<td>{html.escape(record['article'] or '—')}</td>"
+                f"<td>{html.escape(record['material'] or '—')}</td>"
+                f"<td>{_format_decimal(record['thickness'])}</td>"
+                f"<td>{html.escape(record['color'] or '—')}</td>"
+                f"<td>{_format_decimal(record['length'])}</td>"
+                f"<td>{_format_decimal(record['width'])}</td>"
+                f"<td>{html.escape(record['warehouse'] or '—')}</td>"
+                f"<td>{html.escape(comment)}</td>"
+                f"<td>{html.escape(record['employee_name'] or '—')}</td>"
+                f"<td>{arrival_formatted}</td>"
+                "</tr>"
+            )
+        table_body = "".join(rows_html)
+    else:
+        table_body = (
+            "<tr><td colspan=\"10\" style=\"text-align:center;\">"
+            "Нет добавленных записей"
+            "</td></tr>"
+        )
+
+    html = f"""
+    <html>
+        <head>
+            <meta charset=\"utf-8\" />
+            <title>Склад пластика</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 2rem; }}
+                table {{ border-collapse: collapse; width: 100%; }}
+                th, td {{ border: 1px solid #ccc; padding: 0.5rem; }}
+                th {{ background-color: #f5f5f5; text-align: left; }}
+            </style>
+        </head>
+        <body>
+            <h1>Список добавленного пластика</h1>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Артикул</th>
+                        <th>Материал</th>
+                        <th>Толщина</th>
+                        <th>Цвет</th>
+                        <th>Длина, мм</th>
+                        <th>Ширина, мм</th>
+                        <th>Склад</th>
+                        <th>Комментарий</th>
+                        <th>Сотрудник</th>
+                        <th>Дата поступления</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {table_body}
+                </tbody>
+            </table>
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
