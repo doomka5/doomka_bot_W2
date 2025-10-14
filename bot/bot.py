@@ -273,13 +273,37 @@ WAREHOUSE_SETTINGS_MENU_KB = ReplyKeyboardMarkup(
 
 WAREHOUSE_SETTINGS_PLASTIC_KB = ReplyKeyboardMarkup(
     keyboard=[
+        [KeyboardButton(text="📦 Материал")],
+        [KeyboardButton(text="📏 Толщина")],
+        [KeyboardButton(text="🎨 Цвет")],
+        [KeyboardButton(text="⬅️ Назад к складу")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_PLASTIC_MATERIALS_KB = ReplyKeyboardMarkup(
+    keyboard=[
         [KeyboardButton(text="➕ Добавить материал")],
         [KeyboardButton(text="➖ Удалить материал")],
+        [KeyboardButton(text="⬅️ Назад к пластику")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB = ReplyKeyboardMarkup(
+    keyboard=[
         [KeyboardButton(text="➕ Добавить толщину")],
         [KeyboardButton(text="➖ Удалить толщину")],
+        [KeyboardButton(text="⬅️ Назад к пластику")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB = ReplyKeyboardMarkup(
+    keyboard=[
         [KeyboardButton(text="➕ Добавить цвет")],
         [KeyboardButton(text="➖ Удалить цвет")],
-        [KeyboardButton(text="⬅️ Назад к складу")],
+        [KeyboardButton(text="⬅️ Назад к пластику")],
     ],
     resize_keyboard=True,
 )
@@ -708,6 +732,49 @@ async def handle_warehouse_settings_plastic(message: Message) -> None:
     await send_plastic_settings_overview(message)
 
 
+@dp.message(F.text == "📦 Материал")
+async def handle_plastic_materials_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await message.answer(
+        "Выберите действие с материалами:",
+        reply_markup=WAREHOUSE_SETTINGS_PLASTIC_MATERIALS_KB,
+    )
+
+
+@dp.message(F.text == "📏 Толщина")
+async def handle_plastic_thickness_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await message.answer(
+        "Выберите действие с толщинами:",
+        reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
+    )
+
+
+@dp.message(F.text == "🎨 Цвет")
+async def handle_plastic_colors_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await message.answer(
+        "Выберите действие с цветами:",
+        reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
+    )
+
+
+@dp.message(F.text == "⬅️ Назад к пластику")
+async def handle_back_to_plastic_settings(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_plastic_settings_overview(message)
+
+
 @dp.message(F.text == "➕ Добавить материал")
 async def handle_add_plastic_material_button(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
@@ -746,7 +813,7 @@ async def handle_remove_plastic_material_button(message: Message, state: FSMCont
     if not materials:
         await message.answer(
             "Список материалов пуст. Добавьте материалы перед удалением.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_MATERIALS_KB,
         )
         await state.clear()
         return
@@ -781,7 +848,7 @@ async def handle_add_thickness_button(message: Message, state: FSMContext) -> No
     if not materials:
         await message.answer(
             "Сначала добавьте материал, чтобы можно было указать толщины.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
         await state.clear()
         return
@@ -834,7 +901,7 @@ async def process_add_thickness_value(message: Message, state: FSMContext) -> No
         await state.clear()
         await message.answer(
             "ℹ️ Материал не найден. Попробуйте начать заново.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
         return
     value = parse_thickness_input(message.text or "")
@@ -848,17 +915,17 @@ async def process_add_thickness_value(message: Message, state: FSMContext) -> No
     if status == "material_not_found":
         await message.answer(
             "ℹ️ Материал больше не существует. Попробуйте снова.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
     elif status == "exists":
         await message.answer(
             f"ℹ️ Толщина {format_thickness_value(value)} уже добавлена для «{material}».",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
     else:
         await message.answer(
             f"✅ Толщина {format_thickness_value(value)} добавлена для «{material}».",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
     await state.clear()
     await send_plastic_settings_overview(message)
@@ -872,7 +939,7 @@ async def handle_add_color_button(message: Message, state: FSMContext) -> None:
     if not materials:
         await message.answer(
             "Сначала добавьте материалы, чтобы указать для них цвета.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
         await state.clear()
         return
@@ -922,7 +989,7 @@ async def process_add_color_value(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer(
             "ℹ️ Материал не найден. Попробуйте начать заново.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
         return
     color = (message.text or "").strip()
@@ -936,17 +1003,17 @@ async def process_add_color_value(message: Message, state: FSMContext) -> None:
     if status == "material_not_found":
         await message.answer(
             "ℹ️ Материал больше не существует. Попробуйте снова.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
     elif status == "exists":
         await message.answer(
             f"ℹ️ Цвет «{color}» уже добавлен для «{material}».",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
     else:
         await message.answer(
             f"✅ Цвет «{color}» добавлен для «{material}».",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
     await state.clear()
     await send_plastic_settings_overview(message)
@@ -965,7 +1032,7 @@ async def handle_remove_thickness_button(message: Message, state: FSMContext) ->
     if not materials_with_data:
         await message.answer(
             "Пока нет материалов с толщинами для удаления.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
         await state.clear()
         return
@@ -1028,7 +1095,7 @@ async def process_remove_thickness_value(message: Message, state: FSMContext) ->
         await state.clear()
         await message.answer(
             "ℹ️ Материал не найден. Попробуйте начать заново.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
         return
     value = parse_thickness_input(message.text or "")
@@ -1042,17 +1109,17 @@ async def process_remove_thickness_value(message: Message, state: FSMContext) ->
     if status == "material_not_found":
         await message.answer(
             "ℹ️ Материал больше не существует. Попробуйте снова.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
     elif status == "deleted":
         await message.answer(
             f"🗑 Толщина {format_thickness_value(value)} удалена у «{material}».",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
     else:
         await message.answer(
             f"ℹ️ Толщина {format_thickness_value(value)} не найдена у «{material}».",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_THICKNESS_KB,
         )
     await state.clear()
     await send_plastic_settings_overview(message)
@@ -1071,7 +1138,7 @@ async def handle_remove_color_button(message: Message, state: FSMContext) -> Non
     if not materials_with_colors:
         await message.answer(
             "Пока нет материалов с добавленными цветами для удаления.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
         await state.clear()
         return
@@ -1134,7 +1201,7 @@ async def process_remove_color_value(message: Message, state: FSMContext) -> Non
         await state.clear()
         await message.answer(
             "ℹ️ Материал не найден. Попробуйте начать заново.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
         return
     color = (message.text or "").strip()
@@ -1148,17 +1215,17 @@ async def process_remove_color_value(message: Message, state: FSMContext) -> Non
     if status == "material_not_found":
         await message.answer(
             "ℹ️ Материал больше не существует. Попробуйте снова.",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
     elif status == "deleted":
         await message.answer(
             f"🗑 Цвет «{color}» удалён у «{material}».",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
     else:
         await message.answer(
             f"ℹ️ Цвет «{color}» не найден у «{material}».",
-            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB,
         )
     await state.clear()
     await send_plastic_settings_overview(message)
