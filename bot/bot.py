@@ -161,6 +161,15 @@ async def init_database() -> None:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plastic_storage_locations (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
             # Добавляем администратора
             await conn.execute(
                 """
@@ -222,6 +231,8 @@ class ManagePlasticMaterialStates(StatesGroup):
     waiting_for_color_value_to_add = State()
     waiting_for_material_name_to_delete_color = State()
     waiting_for_color_value_to_delete = State()
+    waiting_for_new_storage_location_name = State()
+    waiting_for_storage_location_to_delete = State()
 
 
 # === Клавиатуры ===
@@ -276,6 +287,7 @@ WAREHOUSE_SETTINGS_PLASTIC_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="📦 Материал")],
         [KeyboardButton(text="📏 Толщина")],
         [KeyboardButton(text="🎨 Цвет")],
+        [KeyboardButton(text="🏷️ Место хранения")],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -303,6 +315,15 @@ WAREHOUSE_SETTINGS_PLASTIC_COLORS_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить цвет")],
         [KeyboardButton(text="➖ Удалить цвет")],
+        [KeyboardButton(text="⬅️ Назад к пластику")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_PLASTIC_STORAGE_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить место хранения")],
+        [KeyboardButton(text="➖ Удалить место хранения")],
         [KeyboardButton(text="⬅️ Назад к пластику")],
     ],
     resize_keyboard=True,
@@ -361,6 +382,16 @@ async def fetch_plastic_material_types() -> list[str]:
     return [row["name"] for row in rows]
 
 
+async def fetch_plastic_storage_locations() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM plastic_storage_locations ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
 async def insert_plastic_material_type(name: str) -> bool:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -383,6 +414,38 @@ async def delete_plastic_material_type(name: str) -> bool:
     async with db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM plastic_material_types WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_plastic_storage_location(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        existing_id = await conn.fetchval(
+            "SELECT id FROM plastic_storage_locations WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+        if existing_id:
+            return False
+        row = await conn.fetchrow(
+            """
+            INSERT INTO plastic_storage_locations (name)
+            VALUES ($1)
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_plastic_storage_location(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM plastic_storage_locations WHERE LOWER(name) = LOWER($1)",
             name,
         )
     return result.endswith(" 1")
@@ -580,6 +643,12 @@ def format_colors_list(colors: list[str]) -> str:
     return ", ".join(colors)
 
 
+def format_storage_locations_list(locations: list[str]) -> str:
+    if not locations:
+        return "—"
+    return "\n".join(f"• {item}" for item in locations)
+
+
 def parse_thickness_input(raw_text: str) -> Optional[Decimal]:
     if raw_text is None:
         return None
@@ -624,9 +693,18 @@ def build_colors_keyboard(colors: list[str]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_storage_locations_keyboard(locations: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for location in locations:
+        rows.append([KeyboardButton(text=location)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 # === Сервисные функции ===
 async def send_plastic_settings_overview(message: Message) -> None:
     materials = await fetch_materials_with_thicknesses()
+    storage_locations = await fetch_plastic_storage_locations()
     if materials:
         lines = []
         for material in materials:
@@ -655,7 +733,21 @@ async def send_plastic_settings_overview(message: Message) -> None:
             "⚙️ Настройки склада → Пластик.\n\n"
             "Материалы ещё не добавлены. Используйте кнопки ниже."
         )
+    storage_text = format_storage_locations_list(storage_locations)
+    text = f"{text}\n\nМеста хранения:\n{storage_text}"
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB)
+
+
+async def send_storage_locations_overview(message: Message) -> None:
+    locations = await fetch_plastic_storage_locations()
+    formatted = format_storage_locations_list(locations)
+    await message.answer(
+        "⚙️ Настройки склада → Пластик → Места хранения.\n\n"
+        "Доступные места хранения:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить место.",
+        reply_markup=WAREHOUSE_SETTINGS_PLASTIC_STORAGE_KB,
+    )
 
 
 # === Команды ===
@@ -765,6 +857,14 @@ async def handle_plastic_colors_menu(message: Message, state: FSMContext) -> Non
     )
 
 
+@dp.message(F.text == "🏷️ Место хранения")
+async def handle_plastic_storage_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_storage_locations_overview(message)
+
+
 @dp.message(F.text == "⬅️ Назад к пластику")
 async def handle_back_to_plastic_settings(
     message: Message, state: FSMContext
@@ -838,6 +938,83 @@ async def process_remove_plastic_material(message: Message, state: FSMContext) -
         await message.answer(f"ℹ️ Материал «{name}» не найден в списке.")
     await state.clear()
     await send_plastic_settings_overview(message)
+
+
+@dp.message(F.text == "➕ Добавить место хранения")
+async def handle_add_storage_location_button(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(
+        ManagePlasticMaterialStates.waiting_for_new_storage_location_name
+    )
+    locations = await fetch_plastic_storage_locations()
+    existing_text = format_storage_locations_list(locations)
+    await message.answer(
+        "Введите название места хранения (например, Полка А1, Стеллаж 3).\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_new_storage_location_name)
+async def process_new_storage_location(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_plastic_storage_location(name):
+        await message.answer(f"✅ Место хранения «{name}» добавлено.")
+    else:
+        await message.answer(
+            f"ℹ️ Место хранения «{name}» уже есть в списке."
+        )
+    await state.clear()
+    await send_storage_locations_overview(message)
+
+
+@dp.message(F.text == "➖ Удалить место хранения")
+async def handle_remove_storage_location_button(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    locations = await fetch_plastic_storage_locations()
+    if not locations:
+        await message.answer(
+            "Список мест хранения пуст. Добавьте места перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_STORAGE_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManagePlasticMaterialStates.waiting_for_storage_location_to_delete
+    )
+    await message.answer(
+        "Выберите место хранения, которое нужно удалить:",
+        reply_markup=build_storage_locations_keyboard(locations),
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_storage_location_to_delete)
+async def process_remove_storage_location(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_plastic_storage_location(name):
+        await message.answer(f"🗑 Место хранения «{name}» удалено.")
+    else:
+        await message.answer(
+            f"ℹ️ Место хранения «{name}» не найдено в списке."
+        )
+    await state.clear()
+    await send_storage_locations_overview(message)
 
 
 @dp.message(F.text == "➕ Добавить толщину")
