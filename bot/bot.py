@@ -151,6 +151,16 @@ async def init_database() -> None:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plastic_material_colors (
+                    id SERIAL PRIMARY KEY,
+                    material_id INTEGER NOT NULL REFERENCES plastic_material_types(id) ON DELETE CASCADE,
+                    color TEXT NOT NULL,
+                    UNIQUE(material_id, color)
+                )
+                """
+            )
             # Добавляем администратора
             await conn.execute(
                 """
@@ -208,6 +218,10 @@ class ManagePlasticMaterialStates(StatesGroup):
     waiting_for_thickness_value_to_add = State()
     waiting_for_material_name_to_delete_thickness = State()
     waiting_for_thickness_value_to_delete = State()
+    waiting_for_material_name_to_add_color = State()
+    waiting_for_color_value_to_add = State()
+    waiting_for_material_name_to_delete_color = State()
+    waiting_for_color_value_to_delete = State()
 
 
 # === Клавиатуры ===
@@ -263,6 +277,8 @@ WAREHOUSE_SETTINGS_PLASTIC_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="➖ Удалить материал")],
         [KeyboardButton(text="➕ Добавить толщину")],
         [KeyboardButton(text="➖ Удалить толщину")],
+        [KeyboardButton(text="➕ Добавить цвет")],
+        [KeyboardButton(text="➖ Удалить цвет")],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -356,13 +372,22 @@ async def fetch_materials_with_thicknesses() -> list[dict[str, Any]]:
             """
             SELECT p.name,
                    COALESCE(
-                       ARRAY_AGG(t.thickness ORDER BY t.thickness)
-                       FILTER (WHERE t.thickness IS NOT NULL),
+                       (
+                           SELECT ARRAY_AGG(t.thickness ORDER BY t.thickness)
+                           FROM plastic_material_thicknesses t
+                           WHERE t.material_id = p.id
+                       ),
                        ARRAY[]::NUMERIC[]
-                   ) AS thicknesses
+                   ) AS thicknesses,
+                   COALESCE(
+                       (
+                           SELECT ARRAY_AGG(c.color ORDER BY LOWER(c.color))
+                           FROM plastic_material_colors c
+                           WHERE c.material_id = p.id
+                       ),
+                       ARRAY[]::TEXT[]
+                   ) AS colors
             FROM plastic_material_types p
-            LEFT JOIN plastic_material_thicknesses t ON t.material_id = p.id
-            GROUP BY p.id
             ORDER BY LOWER(p.name)
             """
         )
@@ -434,6 +459,78 @@ async def delete_material_thickness(material_name: str, thickness: Decimal) -> s
     return "not_found"
 
 
+async def fetch_material_colors(material_name: str) -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT c.color
+            FROM plastic_material_colors c
+            JOIN plastic_material_types p ON p.id = c.material_id
+            WHERE LOWER(p.name) = LOWER($1)
+            ORDER BY LOWER(c.color)
+            """,
+            material_name,
+        )
+    return [row["color"] for row in rows]
+
+
+async def insert_material_color(material_name: str, color: str) -> str:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        material_id = await conn.fetchval(
+            "SELECT id FROM plastic_material_types WHERE LOWER(name) = LOWER($1)",
+            material_name,
+        )
+        if material_id is None:
+            return "material_not_found"
+        exists = await conn.fetchval(
+            """
+            SELECT 1
+            FROM plastic_material_colors
+            WHERE material_id = $1 AND LOWER(color) = LOWER($2)
+            """,
+            material_id,
+            color,
+        )
+        if exists:
+            return "exists"
+        await conn.execute(
+            """
+            INSERT INTO plastic_material_colors (material_id, color)
+            VALUES ($1, $2)
+            """,
+            material_id,
+            color,
+        )
+    return "added"
+
+
+async def delete_material_color(material_name: str, color: str) -> str:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        material_id = await conn.fetchval(
+            "SELECT id FROM plastic_material_types WHERE LOWER(name) = LOWER($1)",
+            material_name,
+        )
+        if material_id is None:
+            return "material_not_found"
+        result = await conn.execute(
+            """
+            DELETE FROM plastic_material_colors
+            WHERE material_id = $1 AND LOWER(color) = LOWER($2)
+            """,
+            material_id,
+            color,
+        )
+    if result.endswith(" 1"):
+        return "deleted"
+    return "not_found"
+
+
 def format_materials_list(materials: list[str]) -> str:
     if not materials:
         return "—"
@@ -451,6 +548,12 @@ def format_thicknesses_list(thicknesses: list[Decimal]) -> str:
     if not thicknesses:
         return "—"
     return ", ".join(format_thickness_value(value) for value in thicknesses)
+
+
+def format_colors_list(colors: list[str]) -> str:
+    if not colors:
+        return "—"
+    return ", ".join(colors)
 
 
 def parse_thickness_input(raw_text: str) -> Optional[Decimal]:
@@ -489,6 +592,14 @@ def build_thickness_keyboard(thicknesses: list[Decimal]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_colors_keyboard(colors: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for value in colors:
+        rows.append([KeyboardButton(text=value)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 # === Сервисные функции ===
 async def send_plastic_settings_overview(message: Message) -> None:
     materials = await fetch_materials_with_thicknesses()
@@ -498,11 +609,21 @@ async def send_plastic_settings_overview(message: Message) -> None:
             name = material["name"]
             thicknesses = material.get("thicknesses") or []
             formatted_thicknesses = format_thicknesses_list(thicknesses)
-            lines.append(f"• {name} — {formatted_thicknesses}")
+            colors = material.get("colors") or []
+            formatted_colors = format_colors_list(colors)
+            lines.append(
+                "\n".join(
+                    [
+                        f"• {name}",
+                        f"   Толщины: {formatted_thicknesses}",
+                        f"   Цвета: {formatted_colors}",
+                    ]
+                )
+            )
         materials_list = "\n".join(lines)
         text = (
             "⚙️ Настройки склада → Пластик.\n\n"
-            "Доступные материалы и толщины:\n"
+            "Доступные материалы, толщины и цвета:\n"
             f"{materials_list}"
         )
     else:
@@ -743,6 +864,94 @@ async def process_add_thickness_value(message: Message, state: FSMContext) -> No
     await send_plastic_settings_overview(message)
 
 
+@dp.message(F.text == "➕ Добавить цвет")
+async def handle_add_color_button(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    materials = await fetch_plastic_material_types()
+    if not materials:
+        await message.answer(
+            "Сначала добавьте материалы, чтобы указать для них цвета.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManagePlasticMaterialStates.waiting_for_material_name_to_add_color)
+    await message.answer(
+        "Выберите материал, для которого нужно добавить цвет:",
+        reply_markup=build_materials_keyboard(materials),
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_material_name_to_add_color)
+async def process_add_color_material_selection(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    materials = await fetch_plastic_material_types()
+    match = next((item for item in materials if item.lower() == name.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Такой материал не найден. Выберите один из списка.",
+            reply_markup=build_materials_keyboard(materials),
+        )
+        return
+    await state.update_data(selected_material=match)
+    await state.set_state(ManagePlasticMaterialStates.waiting_for_color_value_to_add)
+    existing_colors = await fetch_material_colors(match)
+    existing_text = format_colors_list(existing_colors)
+    await message.answer(
+        "Введите название цвета (например, Белый, Чёрный, Красный).\n\n"
+        f"Текущие цвета для «{match}»: {existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_color_value_to_add)
+async def process_add_color_value(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    data = await state.get_data()
+    material = data.get("selected_material")
+    if not material:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Материал не найден. Попробуйте начать заново.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        return
+    color = (message.text or "").strip()
+    if not color:
+        await message.answer(
+            "⚠️ Цвет не может быть пустым. Укажите название цвета.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    status = await insert_material_color(material, color)
+    if status == "material_not_found":
+        await message.answer(
+            "ℹ️ Материал больше не существует. Попробуйте снова.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    elif status == "exists":
+        await message.answer(
+            f"ℹ️ Цвет «{color}» уже добавлен для «{material}».",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    else:
+        await message.answer(
+            f"✅ Цвет «{color}» добавлен для «{material}».",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    await state.clear()
+    await send_plastic_settings_overview(message)
+
+
 @dp.message(F.text == "➖ Удалить толщину")
 async def handle_remove_thickness_button(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
@@ -843,6 +1052,112 @@ async def process_remove_thickness_value(message: Message, state: FSMContext) ->
     else:
         await message.answer(
             f"ℹ️ Толщина {format_thickness_value(value)} не найдена у «{material}».",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    await state.clear()
+    await send_plastic_settings_overview(message)
+
+
+@dp.message(F.text == "➖ Удалить цвет")
+async def handle_remove_color_button(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    materials = await fetch_materials_with_thicknesses()
+    materials_with_colors = [
+        item["name"]
+        for item in materials
+        if item.get("colors") and len(item["colors"]) > 0
+    ]
+    if not materials_with_colors:
+        await message.answer(
+            "Пока нет материалов с добавленными цветами для удаления.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManagePlasticMaterialStates.waiting_for_material_name_to_delete_color
+    )
+    await message.answer(
+        "Выберите материал, у которого нужно удалить цвет:",
+        reply_markup=build_materials_keyboard(materials_with_colors),
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_material_name_to_delete_color)
+async def process_remove_color_material_selection(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    materials = await fetch_materials_with_thicknesses()
+    match = next(
+        (
+            item
+            for item in materials
+            if item["name"].lower() == name.lower()
+            and item.get("colors")
+            and len(item["colors"]) > 0
+        ),
+        None,
+    )
+    if match is None:
+        options = [
+            item["name"]
+            for item in materials
+            if item.get("colors") and len(item["colors"]) > 0
+        ]
+        await message.answer(
+            "ℹ️ Материал не найден или у него нет цветов. Выберите из списка.",
+            reply_markup=build_materials_keyboard(options),
+        )
+        return
+    await state.update_data(selected_material=match["name"])
+    await state.set_state(ManagePlasticMaterialStates.waiting_for_color_value_to_delete)
+    await message.answer(
+        "Выберите цвет, который нужно удалить:",
+        reply_markup=build_colors_keyboard(match["colors"]),
+    )
+
+
+@dp.message(ManagePlasticMaterialStates.waiting_for_color_value_to_delete)
+async def process_remove_color_value(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    data = await state.get_data()
+    material = data.get("selected_material")
+    if not material:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Материал не найден. Попробуйте начать заново.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+        return
+    color = (message.text or "").strip()
+    if not color:
+        await message.answer(
+            "⚠️ Не удалось распознать цвет. Укажите название цвета.",
+            reply_markup=build_colors_keyboard(await fetch_material_colors(material)),
+        )
+        return
+    status = await delete_material_color(material, color)
+    if status == "material_not_found":
+        await message.answer(
+            "ℹ️ Материал больше не существует. Попробуйте снова.",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    elif status == "deleted":
+        await message.answer(
+            f"🗑 Цвет «{color}» удалён у «{material}».",
+            reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
+        )
+    else:
+        await message.answer(
+            f"ℹ️ Цвет «{color}» не найден у «{material}».",
             reply_markup=WAREHOUSE_SETTINGS_PLASTIC_KB,
         )
     await state.clear()
