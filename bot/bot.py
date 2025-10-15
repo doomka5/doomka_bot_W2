@@ -261,6 +261,11 @@ class SearchWarehousePlasticStates(StatesGroup):
     waiting_for_query = State()
 
 
+class CommentWarehousePlasticStates(StatesGroup):
+    waiting_for_article = State()
+    waiting_for_comment = State()
+
+
 # === Клавиатуры ===
 MAIN_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -396,6 +401,13 @@ async def _cancel_add_plastic_flow(message: Message, state: FSMContext) -> None:
 async def _cancel_search_plastic_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("❌ Поиск отменён.", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+async def _cancel_comment_plastic_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Изменение комментария отменено.", reply_markup=WAREHOUSE_PLASTICS_KB
+    )
 
 
 # === Работа с БД ===
@@ -762,6 +774,54 @@ async def search_warehouse_plastic_records(query: str, limit: int = 5) -> list[D
     return [dict(row) for row in rows]
 
 
+async def fetch_warehouse_plastic_by_article(article: str) -> Optional[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                id,
+                article,
+                material,
+                thickness,
+                color,
+                length,
+                width,
+                warehouse,
+                comment,
+                employee_name,
+                arrival_at
+            FROM warehouse_plastics
+            WHERE article = $1
+            ORDER BY arrival_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            """,
+            article,
+        )
+    if row is None:
+        return None
+    return dict(row)
+
+
+async def update_warehouse_plastic_comment(
+    record_id: int, comment: Optional[str]
+) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE warehouse_plastics
+            SET comment = $2
+            WHERE id = $1
+            """,
+            record_id,
+            comment,
+        )
+    return result.endswith(" 1")
+
+
 def format_materials_list(materials: list[str]) -> str:
     if not materials:
         return "—"
@@ -1016,6 +1076,16 @@ async def handle_search_warehouse_plastic(message: Message, state: FSMContext) -
     )
 
 
+@dp.message(F.text == "💬 Комментировать")
+async def handle_comment_warehouse_plastic(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(CommentWarehousePlasticStates.waiting_for_article)
+    await message.answer(
+        "Введите номер артикула, чтобы просмотреть и изменить комментарий.",
+        reply_markup=CANCEL_KB,
+    )
+
+
 @dp.message(SearchWarehousePlasticStates.waiting_for_query)
 async def process_search_warehouse_plastic(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -1042,6 +1112,80 @@ async def process_search_warehouse_plastic(message: Message, state: FSMContext) 
     await message.answer(
         "Введите новый запрос для продолжения поиска или нажмите «❌ Отмена».",
         reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(CommentWarehousePlasticStates.waiting_for_article)
+async def process_comment_article(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_comment_plastic_flow(message, state)
+        return
+    article = (message.text or "").strip()
+    if not article.isdigit():
+        await message.answer(
+            "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    record = await fetch_warehouse_plastic_by_article(article)
+    if record is None:
+        await message.answer(
+            "ℹ️ Пластик с таким артикулом не найден. Попробуйте другой артикул.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    previous_comment = record.get("comment")
+    await state.update_data(
+        plastic_id=record["id"],
+        article=record.get("article"),
+        previous_comment=previous_comment,
+    )
+    await message.answer(
+        "Найдена запись:\n\n"
+        f"{format_plastic_record_for_message(record)}\n\n"
+        f"Текущий комментарий: {previous_comment or '—'}",
+        reply_markup=CANCEL_KB,
+    )
+    await state.set_state(CommentWarehousePlasticStates.waiting_for_comment)
+    await message.answer(
+        "Введите новый комментарий. Пустое сообщение удалит существующий комментарий.",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(CommentWarehousePlasticStates.waiting_for_comment)
+async def process_comment_update(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_comment_plastic_flow(message, state)
+        return
+    data = await state.get_data()
+    record_id = data.get("plastic_id")
+    article = data.get("article")
+    previous_comment = data.get("previous_comment")
+    if record_id is None or article is None:
+        await _cancel_comment_plastic_flow(message, state)
+        return
+    new_comment_raw = (message.text or "").strip()
+    new_comment: Optional[str]
+    if new_comment_raw:
+        new_comment = new_comment_raw
+    else:
+        new_comment = None
+    updated = await update_warehouse_plastic_comment(record_id, new_comment)
+    if not updated:
+        await message.answer(
+            "⚠️ Не удалось обновить комментарий. Попробуйте позже.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        await state.clear()
+        return
+    await state.clear()
+    await message.answer(
+        "✅ Комментарий обновлён.\n"
+        f"Артикул: {article}\n"
+        f"Старый комментарий: {previous_comment or '—'}\n"
+        f"Новый комментарий: {new_comment or '—'}",
+        reply_markup=WAREHOUSE_PLASTICS_KB,
     )
 
 
