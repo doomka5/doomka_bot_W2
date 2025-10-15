@@ -1,9 +1,12 @@
 import html
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 import asyncpg
 import os
+from io import BytesIO
+
+from openpyxl import Workbook
 
 app = FastAPI()
 
@@ -185,6 +188,18 @@ async def plastics_page() -> HTMLResponse:
             <title>Склад пластика</title>
             <style>
                 body {{ font-family: Arial, sans-serif; margin: 2rem; }}
+                .export-btn {{
+                    display: inline-block;
+                    margin-bottom: 1rem;
+                    padding: 0.5rem 1rem;
+                    background-color: #4CAF50;
+                    color: white;
+                    text-decoration: none;
+                    border-radius: 4px;
+                }}
+                .export-btn:hover {{
+                    background-color: #45a049;
+                }}
                 table {{ border-collapse: collapse; width: 100%; }}
                 th, td {{ border: 1px solid #ccc; padding: 0.5rem; }}
                 th {{ background-color: #f5f5f5; text-align: left; }}
@@ -192,6 +207,7 @@ async def plastics_page() -> HTMLResponse:
         </head>
         <body>
             <h1>Список добавленного пластика</h1>
+            <a href=\"/plastics/export\" class=\"export-btn\">Экспортировать в Excel</a>
             <table>
                 <thead>
                     <tr>
@@ -215,3 +231,85 @@ async def plastics_page() -> HTMLResponse:
     </html>
     """
     return HTMLResponse(content=html)
+
+
+@app.get("/plastics/export")
+async def plastics_export() -> StreamingResponse:
+    """Экспортирует данные по пластику в Excel-файл."""
+    conn = await asyncpg.connect(**DB_SETTINGS)
+    records = await conn.fetch(
+        """
+        SELECT
+            article,
+            material,
+            thickness,
+            color,
+            length,
+            width,
+            warehouse,
+            comment,
+            employee_name,
+            arrival_at
+        FROM warehouse_plastics
+        ORDER BY arrival_at DESC NULLS LAST, id DESC
+        """
+    )
+    await conn.close()
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Пластик"
+
+    headers = [
+        "Артикул",
+        "Материал",
+        "Толщина",
+        "Цвет",
+        "Длина, мм",
+        "Ширина, мм",
+        "Склад",
+        "Комментарий",
+        "Сотрудник",
+        "Дата поступления",
+    ]
+    sheet.append(headers)
+
+    for record in records:
+        arrival_at = record["arrival_at"]
+        if arrival_at is None:
+            arrival_formatted = None
+        else:
+            try:
+                arrival_tz = (
+                    arrival_at.astimezone()
+                    if getattr(arrival_at, "tzinfo", None)
+                    else arrival_at
+                )
+                arrival_formatted = arrival_tz.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                arrival_formatted = str(arrival_at)
+
+        sheet.append(
+            [
+                record["article"],
+                record["material"],
+                record["thickness"],
+                record["color"],
+                record["length"],
+                record["width"],
+                record["warehouse"],
+                record["comment"],
+                record["employee_name"],
+                arrival_formatted,
+            ]
+        )
+
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=plastics_export.xlsx"},
+    )
