@@ -453,6 +453,20 @@ async def upsert_user_in_db(tg_id: int, username: str, position: str, role: str)
         )
 
 
+async def fetch_all_users_from_db() -> list[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT tg_id, username, position, role, created_at
+            FROM users
+            ORDER BY created_at DESC NULLS LAST, id DESC
+            """
+        )
+    return [dict(row) for row in rows]
+
+
 async def fetch_plastic_material_types() -> list[str]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -892,6 +906,56 @@ def format_materials_list(materials: list[str]) -> str:
     return "\n".join(f"• {item}" for item in materials)
 
 
+def _format_datetime(value: Optional[datetime]) -> str:
+    if value is None:
+        return "—"
+    try:
+        localised = value.astimezone(WARSAW_TZ)
+    except Exception:
+        localised = value
+    return localised.strftime("%Y-%m-%d %H:%M")
+
+
+def format_user_record_for_message(record: Dict[str, Any], index: int) -> str:
+    tg_id = record.get("tg_id") or "—"
+    username = record.get("username") or "—"
+    position = record.get("position") or "—"
+    role = record.get("role") or "—"
+    created_at = record.get("created_at")
+    created_text = _format_datetime(created_at)
+    return (
+        f"{index}. 👤 {username}\n"
+        f"   • TG ID: {tg_id}\n"
+        f"   • Должность: {position}\n"
+        f"   • Роль: {role}\n"
+        f"   • Добавлен: {created_text}"
+    )
+
+
+def split_text_into_messages(text: str, limit: int = 4000) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    parts = text.split("\n\n")
+    chunks: list[str] = []
+    current = ""
+    for part in parts:
+        candidate = part if not current else f"{current}\n\n{part}"
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        if len(part) > limit:
+            for start in range(0, len(part), limit):
+                chunks.append(part[start : start + limit])
+            current = ""
+        else:
+            current = part
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def format_thickness_value(thickness: Decimal) -> str:
     as_str = format(thickness, "f").rstrip("0").rstrip(".")
     if not as_str:
@@ -1124,6 +1188,30 @@ async def handle_users_menu(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
     await message.answer("👥 Пользователи. Выберите действие:", reply_markup=USERS_MENU_KB)
+
+
+@dp.message(F.text == "📋 Посмотреть всех пользователей")
+async def handle_list_all_users(message: Message) -> None:
+    if not await ensure_admin_access(message):
+        return
+    users = await fetch_all_users_from_db()
+    if not users:
+        await message.answer(
+            "ℹ️ В базе пока нет пользователей.", reply_markup=USERS_MENU_KB
+        )
+        return
+    formatted_records = [
+        format_user_record_for_message(record, index)
+        for index, record in enumerate(users, start=1)
+    ]
+    header = f"📋 Всего пользователей: {len(users)}"
+    full_text = f"{header}\n\n" + "\n\n".join(formatted_records)
+    chunks = split_text_into_messages(full_text)
+    for idx, chunk in enumerate(chunks):
+        if idx == 0:
+            await message.answer(chunk, reply_markup=USERS_MENU_KB)
+        else:
+            await message.answer(chunk)
 
 
 @dp.message(F.text == "⬅️ Главное меню")
