@@ -266,6 +266,11 @@ class CommentWarehousePlasticStates(StatesGroup):
     waiting_for_comment = State()
 
 
+class MoveWarehousePlasticStates(StatesGroup):
+    waiting_for_article = State()
+    waiting_for_new_location = State()
+
+
 # === Клавиатуры ===
 MAIN_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -408,6 +413,11 @@ async def _cancel_comment_plastic_flow(message: Message, state: FSMContext) -> N
     await message.answer(
         "❌ Изменение комментария отменено.", reply_markup=WAREHOUSE_PLASTICS_KB
     )
+
+
+async def _cancel_move_plastic_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("❌ Перемещение отменено.", reply_markup=WAREHOUSE_PLASTICS_KB)
 
 
 # === Работа с БД ===
@@ -822,6 +832,45 @@ async def update_warehouse_plastic_comment(
     return result.endswith(" 1")
 
 
+async def update_warehouse_plastic_location(
+    record_id: int,
+    new_location: str,
+    employee_id: Optional[int],
+    employee_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE warehouse_plastics
+            SET warehouse = $2,
+                employee_id = COALESCE($3, employee_id),
+                employee_name = COALESCE($4, employee_name)
+            WHERE id = $1
+            RETURNING
+                id,
+                article,
+                material,
+                thickness,
+                color,
+                length,
+                width,
+                warehouse,
+                comment,
+                employee_name,
+                arrival_at
+            """,
+            record_id,
+            new_location,
+            employee_id,
+            employee_name,
+        )
+    if row is None:
+        return None
+    return dict(row)
+
+
 def format_materials_list(materials: list[str]) -> str:
     if not materials:
         return "—"
@@ -1086,6 +1135,16 @@ async def handle_comment_warehouse_plastic(message: Message, state: FSMContext) 
     )
 
 
+@dp.message(F.text == "🔁 Переместить")
+async def handle_move_warehouse_plastic(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(MoveWarehousePlasticStates.waiting_for_article)
+    await message.answer(
+        "Введите номер артикула, чтобы выбрать новое место хранения.",
+        reply_markup=CANCEL_KB,
+    )
+
+
 @dp.message(SearchWarehousePlasticStates.waiting_for_query)
 async def process_search_warehouse_plastic(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -1185,6 +1244,112 @@ async def process_comment_update(message: Message, state: FSMContext) -> None:
         f"Артикул: {article}\n"
         f"Старый комментарий: {previous_comment or '—'}\n"
         f"Новый комментарий: {new_comment or '—'}",
+        reply_markup=WAREHOUSE_PLASTICS_KB,
+    )
+
+
+@dp.message(MoveWarehousePlasticStates.waiting_for_article)
+async def process_move_article(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_move_plastic_flow(message, state)
+        return
+    article = (message.text or "").strip()
+    if not article.isdigit():
+        await message.answer(
+            "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    record = await fetch_warehouse_plastic_by_article(article)
+    if record is None:
+        await message.answer(
+            "ℹ️ Пластик с таким артикулом не найден. Попробуйте другой артикул.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    locations = await fetch_plastic_storage_locations()
+    if not locations:
+        await state.clear()
+        await message.answer(
+            "Справочник мест хранения пуст. Добавьте места в настройках склада.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    await state.update_data(
+        plastic_id=record["id"],
+        article=record.get("article"),
+        previous_location=record.get("warehouse"),
+    )
+    previous_location = record.get("warehouse") or "—"
+    formatted_record = format_plastic_record_for_message(record)
+    await state.set_state(MoveWarehousePlasticStates.waiting_for_new_location)
+    await message.answer(
+        "Найдена запись:\n\n"
+        f"{formatted_record}\n\n"
+        f"Текущее место хранения: {previous_location}\n\n"
+        "Выберите новое место хранения из списка ниже.",
+        reply_markup=build_storage_locations_keyboard(locations),
+    )
+
+
+@dp.message(MoveWarehousePlasticStates.waiting_for_new_location)
+async def process_move_new_location(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_move_plastic_flow(message, state)
+        return
+    locations = await fetch_plastic_storage_locations()
+    if not locations:
+        await state.clear()
+        await message.answer(
+            "Справочник мест хранения пуст. Добавьте места в настройках склада.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    raw_location = (message.text or "").strip()
+    match = next((item for item in locations if item.lower() == raw_location.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Место хранения не найдено. Выберите одно из списка.",
+            reply_markup=build_storage_locations_keyboard(locations),
+        )
+        return
+    data = await state.get_data()
+    record_id = data.get("plastic_id")
+    article = data.get("article")
+    previous_location_raw = data.get("previous_location")
+    previous_location_display = previous_location_raw or "—"
+    if record_id is None or article is None:
+        await _cancel_move_plastic_flow(message, state)
+        return
+    if previous_location_raw and previous_location_raw.lower() == match.lower():
+        await message.answer(
+            "ℹ️ Пластик уже находится в выбранном месте. Выберите другое место.",
+            reply_markup=build_storage_locations_keyboard(locations),
+        )
+        return
+    employee_id = message.from_user.id if message.from_user else None
+    employee_name = message.from_user.full_name if message.from_user else None
+    updated_record = await update_warehouse_plastic_location(
+        record_id=record_id,
+        new_location=match,
+        employee_id=employee_id,
+        employee_name=employee_name,
+    )
+    if updated_record is None:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось обновить место хранения. Попробуйте позже.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    await state.clear()
+    formatted = format_plastic_record_for_message(updated_record)
+    await message.answer(
+        "✅ Место хранения обновлено.\n\n"
+        f"Артикул: {article}\n"
+        f"Предыдущее место: {previous_location_display}\n"
+        f"Новое место: {match}\n\n"
+        f"Актуальные данные:\n{formatted}",
         reply_markup=WAREHOUSE_PLASTICS_KB,
     )
 
