@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 from pathlib import Path
-from asyncio.subprocess import PIPE
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -38,18 +38,23 @@ DB_NAME = os.getenv("DB_NAME", "botdb")
 DB_USER = os.getenv("DB_USER", "botuser")
 DB_PASS = os.getenv("DB_PASS", "botpass")
 
-UPDATE_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "update.sh"
+def _resolve_update_script_path() -> Path:
+    env_path = os.getenv("UPDATE_SCRIPT_PATH")
+    if env_path:
+        return Path(env_path)
+
+    default_path = Path("/share/3D/doomka_bot_W2/update.sh")
+    if default_path.exists():
+        return default_path
+
+    return Path(__file__).resolve().parent.parent / "update.sh"
+
+
+UPDATE_SCRIPT_PATH = _resolve_update_script_path()
 
 db_pool: Optional[asyncpg.Pool] = None
 
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
-
-
-# === Утилиты ===
-def _truncate_output(text: str, limit: int = 1500) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3] + "..."
 
 
 # === Проверка доступа пользователей ===
@@ -296,7 +301,7 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
 SETTINGS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="👥 Пользователи")],
-        [KeyboardButton(text="🔄 Restart")],
+        [KeyboardButton(text="🔄 Перезагрузить")],
         [KeyboardButton(text="⬅️ Главное меню")],
     ],
     resize_keyboard=True,
@@ -1073,10 +1078,11 @@ async def handle_settings(message: Message) -> None:
     await message.answer("⚙️ Настройки. Выберите действие:", reply_markup=SETTINGS_MENU_KB)
 
 
-@dp.message(F.text == "🔄 Restart")
+@dp.message(F.text == "🔄 Перезагрузить")
 async def handle_restart(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
+
     if not UPDATE_SCRIPT_PATH.exists():
         await message.answer(
             "⚠️ Файл update.sh не найден на сервере.", reply_markup=SETTINGS_MENU_KB
@@ -1084,33 +1090,26 @@ async def handle_restart(message: Message) -> None:
         return
 
     await message.answer(
-        "🔄 Запускаю update.sh. Это может занять несколько минут...",
+        "♻️ Перезапуск системы начат... Подожди немного ⏳",
         reply_markup=SETTINGS_MENU_KB,
     )
 
-    process = await asyncio.create_subprocess_exec(
-        str(UPDATE_SCRIPT_PATH),
-        stdout=PIPE,
-        stderr=PIPE,
-        cwd=str(UPDATE_SCRIPT_PATH.parent),
+    try:
+        subprocess.Popen(
+            ["bash", str(UPDATE_SCRIPT_PATH)],
+            cwd=str(UPDATE_SCRIPT_PATH.parent),
+        )
+    except Exception as exc:
+        await message.answer(
+            f"⚠️ Ошибка при запуске обновления:\n`{exc}`",
+            reply_markup=SETTINGS_MENU_KB,
+        )
+        return
+
+    await message.answer(
+        "✅ Скрипт обновления запущен!\nЯ пришлю уведомление, когда процесс завершится.",
+        reply_markup=SETTINGS_MENU_KB,
     )
-    stdout_data, stderr_data = await process.communicate()
-
-    stdout_text = _truncate_output(stdout_data.decode("utf-8", errors="replace").strip())
-    stderr_text = _truncate_output(stderr_data.decode("utf-8", errors="replace").strip())
-
-    if process.returncode == 0:
-        response = "✅ Скрипт update.sh выполнен успешно."
-        if stdout_text:
-            response += f"\n\nВывод:\n{stdout_text}"
-    else:
-        response = "⚠️ Во время выполнения update.sh произошла ошибка."
-        if stderr_text:
-            response += f"\n\nОшибка:\n{stderr_text}"
-        elif stdout_text:
-            response += f"\n\nВывод:\n{stdout_text}"
-
-    await message.answer(response, reply_markup=SETTINGS_MENU_KB)
 
 
 @dp.message(F.text == "⚙️ Настройки склада")
