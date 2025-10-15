@@ -275,11 +275,9 @@ class MoveWarehousePlasticStates(StatesGroup):
 MAIN_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [
+            KeyboardButton(text="🏢 Склад"),
             KeyboardButton(text="⚙️ Настройки"),
-            KeyboardButton(text="Тест"),
-            KeyboardButton(text="Тест 2"),
         ],
-        [KeyboardButton(text="🏢 Склад")],
     ],
     resize_keyboard=True,
 )
@@ -1053,16 +1051,6 @@ async def send_storage_locations_overview(message: Message) -> None:
 @dp.message(CommandStart())
 async def handle_start(message: Message) -> None:
     await message.answer("👋 Привет! Выберите действие:", reply_markup=MAIN_MENU_KB)
-
-
-@dp.message(F.text == "Тест")
-async def handle_test(message: Message) -> None:
-    await message.answer("тест ок")
-
-
-@dp.message(F.text == "Тест 2")
-async def handle_test_two(message: Message) -> None:
-    await message.answer("тест 2 ок")
 
 
 @dp.message(Command("settings"))
