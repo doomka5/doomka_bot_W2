@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import subprocess
+from io import BytesIO
 from pathlib import Path
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
@@ -22,8 +23,12 @@ from aiogram.types import (
     TelegramObject,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    BufferedInputFile,
 )
 from zoneinfo import ZoneInfo
+
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 
 logging.basicConfig(level=logging.INFO)
 
@@ -386,6 +391,7 @@ WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="➕ Добавить"), KeyboardButton(text="➖ Списать")],
         [KeyboardButton(text="💬 Комментировать")],
         [KeyboardButton(text="🔁 Переместить"), KeyboardButton(text="🔍 Найти")],
+        [KeyboardButton(text="📤 Экспорт")],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -835,6 +841,32 @@ async def search_warehouse_plastic_records(query: str, limit: int = 5) -> list[D
     return [dict(row) for row in rows]
 
 
+async def fetch_all_warehouse_plastics() -> list[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                id,
+                article,
+                material,
+                thickness,
+                color,
+                length,
+                width,
+                warehouse,
+                comment,
+                employee_name,
+                arrival_date,
+                arrival_at
+            FROM warehouse_plastics
+            ORDER BY arrival_at DESC NULLS LAST, id DESC
+            """
+        )
+    return [dict(row) for row in rows]
+
+
 async def fetch_warehouse_plastic_by_article(article: str) -> Optional[Dict[str, Any]]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -931,6 +963,40 @@ def format_materials_list(materials: list[str]) -> str:
 def _format_datetime(value: Optional[datetime]) -> str:
     if value is None:
         return "—"
+    try:
+        localised = value.astimezone(WARSAW_TZ)
+    except Exception:
+        localised = value
+    return localised.strftime("%Y-%m-%d %H:%M")
+
+
+def _decimal_to_excel_number(value: Optional[Decimal]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError, InvalidOperation):
+        try:
+            return float(Decimal(str(value)))
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+
+
+def _format_date_for_excel(value: Optional[date], fallback: Optional[datetime] = None) -> str:
+    if value is not None:
+        return value.strftime("%Y-%m-%d")
+    if fallback is None:
+        return ""
+    try:
+        localised = fallback.astimezone(WARSAW_TZ)
+    except Exception:
+        localised = fallback
+    return localised.strftime("%Y-%m-%d")
+
+
+def _format_datetime_for_excel(value: Optional[datetime]) -> str:
+    if value is None:
+        return ""
     try:
         localised = value.astimezone(WARSAW_TZ)
     except Exception:
@@ -1040,6 +1106,63 @@ def format_storage_locations_list(locations: list[str]) -> str:
     if not locations:
         return "—"
     return "\n".join(f"• {item}" for item in locations)
+
+
+def build_plastics_export_file(records: list[Dict[str, Any]]) -> BufferedInputFile:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Plastics"
+
+    headers = [
+        "Артикул",
+        "Материал",
+        "Толщина (мм)",
+        "Цвет",
+        "Длина (мм)",
+        "Ширина (мм)",
+        "Место хранения",
+        "Комментарий",
+        "Ответственный",
+        "Дата прибытия",
+        "Дата и время прибытия",
+    ]
+    sheet.append(headers)
+
+    for record in records:
+        arrival_at: Optional[datetime] = record.get("arrival_at")
+        arrival_date: Optional[date] = record.get("arrival_date")
+        row = [
+            record.get("article"),
+            record.get("material"),
+            _decimal_to_excel_number(record.get("thickness")),
+            record.get("color"),
+            _decimal_to_excel_number(record.get("length")),
+            _decimal_to_excel_number(record.get("width")),
+            record.get("warehouse"),
+            record.get("comment"),
+            record.get("employee_name"),
+            _format_date_for_excel(arrival_date, arrival_at),
+            _format_datetime_for_excel(arrival_at),
+        ]
+        sheet.append(row)
+
+    for column_index, column_cells in enumerate(sheet.columns, start=1):
+        max_length = 0
+        for cell in column_cells:
+            value = cell.value
+            if value is None:
+                continue
+            max_length = max(max_length, len(str(value)))
+        adjusted_width = min(max(12, max_length + 2), 40)
+        column_letter = get_column_letter(column_index)
+        sheet.column_dimensions[column_letter].width = adjusted_width
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    timestamp = datetime.now(WARSAW_TZ).strftime("%Y%m%d_%H%M%S")
+    filename = f"plastics_export_{timestamp}.xlsx"
+    return BufferedInputFile(buffer.getvalue(), filename=filename)
 
 
 def format_plastic_record_for_message(record: Dict[str, Any]) -> str:
@@ -1458,6 +1581,43 @@ async def handle_warehouse_menu(message: Message) -> None:
 @dp.message(F.text == "🧱 Пластики")
 async def handle_warehouse_plastics(message: Message) -> None:
     await message.answer("📦 Раздел «Пластики». Выберите действие:", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+@dp.message(F.text == "📤 Экспорт")
+async def handle_export_warehouse_plastics(message: Message) -> None:
+    await message.answer("⏳ Формирую файл экспорта. Пожалуйста, подождите...")
+    try:
+        records = await fetch_all_warehouse_plastics()
+    except Exception:
+        logging.exception("Failed to fetch plastics for export")
+        await message.answer(
+            "⚠️ Не удалось получить данные склада. Попробуйте позже.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+
+    if not records:
+        await message.answer(
+            "ℹ️ Нет данных для экспорта.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+
+    try:
+        export_file = build_plastics_export_file(records)
+    except Exception:
+        logging.exception("Failed to build plastics export file")
+        await message.answer(
+            "⚠️ Не удалось сформировать файл экспорта. Попробуйте позже.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+
+    await message.answer_document(
+        document=export_file,
+        caption="📄 Экспорт пластиков",
+        reply_markup=WAREHOUSE_PLASTICS_KB,
+    )
 
 
 @dp.message(F.text == "🔍 Найти")
