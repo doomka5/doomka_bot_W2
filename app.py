@@ -1,9 +1,12 @@
 import os
+from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 
 import asyncpg
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from openpyxl import Workbook
 
 DATABASE_POOL: Optional[asyncpg.pool.Pool] = None
 
@@ -235,6 +238,21 @@ async def html_plastics(
     if not rows:
         rows = "<tr><td colspan=\"13\">Нет данных</td></tr>"
 
+    params = {
+        "article": article,
+        "material": material,
+        "color": color,
+        "warehouse": warehouse,
+        "thickness": thickness,
+        "thickness_min": thickness_min,
+        "thickness_max": thickness_max,
+    }
+    filtered_params = {k: v for k, v in params.items() if v not in (None, "")}
+    export_query = urlencode(filtered_params)
+    export_url = "/plastics/export"
+    if export_query:
+        export_url = f"{export_url}?{export_query}"
+
     html_content = f"""
     <!DOCTYPE html>
     <html lang=\"ru\">
@@ -252,6 +270,16 @@ async def html_plastics(
             form button {{ padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; }}
             form button[type=\"submit\"] {{ background-color: #4CAF50; color: white; }}
             form button[type=\"reset\"] {{ background-color: #f0f0f0; }}
+            .export-container {{ margin-bottom: 20px; }}
+            .export-button {{
+                display: inline-block;
+                padding: 8px 16px;
+                background-color: #4CAF50;
+                color: white;
+                text-decoration: none;
+                border-radius: 4px;
+            }}
+            .export-button:hover {{ background-color: #45a049; }}
             table {{ width: 100%; border-collapse: collapse; }}
             th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
             th {{ background-color: #f2f2f2; }}
@@ -294,6 +322,9 @@ async def html_plastics(
                 <button type=\"reset\" onclick=\"window.location='/plastics'; return false;\">Сброс</button>
             </div>
         </form>
+        <div class=\"export-container\">
+            <a href=\"{export_url}\" class=\"export-button\">Экспортировать в Excel</a>
+        </div>
         <table>
             <thead>
                 <tr>
@@ -321,6 +352,79 @@ async def html_plastics(
     """
 
     return HTMLResponse(content=html_content)
+
+
+@app.get("/plastics/export")
+async def export_plastics(
+    article: Optional[str] = Query(default=None),
+    material: Optional[str] = Query(default=None),
+    color: Optional[str] = Query(default=None),
+    warehouse: Optional[str] = Query(default=None),
+    thickness: Optional[float] = Query(default=None),
+    thickness_min: Optional[float] = Query(default=None),
+    thickness_max: Optional[float] = Query(default=None),
+) -> StreamingResponse:
+    data = await fetch_plastics(
+        article=article,
+        material=material,
+        color=color,
+        warehouse=warehouse,
+        thickness=thickness,
+        thickness_min=thickness_min,
+        thickness_max=thickness_max,
+    )
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Пластик"
+
+    headers = [
+        "ID",
+        "Артикул",
+        "Материал",
+        "Толщина",
+        "Цвет",
+        "Длина",
+        "Ширина",
+        "Склад",
+        "Комментарий",
+        "ID сотрудника",
+        "Имя сотрудника",
+        "Дата прихода",
+        "Прибыло",
+    ]
+    sheet.append(headers)
+
+    for item in data:
+        sheet.append(
+            [
+                item.get("id"),
+                item.get("article"),
+                item.get("material"),
+                item.get("thickness"),
+                item.get("color"),
+                item.get("length"),
+                item.get("width"),
+                item.get("warehouse"),
+                item.get("comment"),
+                item.get("employee_id"),
+                item.get("employee_name"),
+                item.get("arrival_date"),
+                item.get("arrival_at"),
+            ]
+        )
+
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=plastics_export.xlsx"
+        },
+    )
 
 
 __all__ = ["app"]
