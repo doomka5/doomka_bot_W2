@@ -7,7 +7,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -245,6 +245,7 @@ class AddUserStates(StatesGroup):
     waiting_for_username = State()
     waiting_for_position = State()
     waiting_for_role = State()
+    waiting_for_created_at = State()
 
 
 class ManagePlasticMaterialStates(StatesGroup):
@@ -411,6 +412,13 @@ async def _process_cancel_if_requested(message: Message, state: FSMContext) -> b
     return True
 
 
+async def _cancel_add_user_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Добавление пользователя отменено.", reply_markup=USERS_MENU_KB
+    )
+
+
 async def _cancel_add_plastic_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -436,20 +444,34 @@ async def _cancel_move_plastic_flow(message: Message, state: FSMContext) -> None
 
 
 # === Работа с БД ===
-async def upsert_user_in_db(tg_id: int, username: str, position: str, role: str) -> None:
+async def upsert_user_in_db(
+    tg_id: int,
+    username: str,
+    position: str,
+    role: str,
+    created_at: Optional[datetime] = None,
+) -> None:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (tg_id, username, position, role)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO users (tg_id, username, position, role, created_at)
+            VALUES ($1, $2, $3, $4, COALESCE($5, timezone('utc', now())))
             ON CONFLICT (tg_id) DO UPDATE
             SET username = EXCLUDED.username,
                 position = EXCLUDED.position,
-                role = EXCLUDED.role
+                role = EXCLUDED.role,
+                created_at = CASE
+                    WHEN $5 IS NULL THEN users.created_at
+                    ELSE EXCLUDED.created_at
+                END
             """,
-            tg_id, username, position, role,
+            tg_id,
+            username,
+            position,
+            role,
+            created_at,
         )
 
 
@@ -916,6 +938,36 @@ def _format_datetime(value: Optional[datetime]) -> str:
     return localised.strftime("%Y-%m-%d %H:%M")
 
 
+def parse_user_created_at_input(text: str) -> Optional[datetime]:
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+
+    datetime_formats = [
+        "%Y-%m-%d %H:%M",
+        "%d.%m.%Y %H:%M",
+        "%d/%m/%Y %H:%M",
+    ]
+    date_formats = ["%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"]
+
+    for fmt in datetime_formats:
+        try:
+            parsed = datetime.strptime(cleaned, fmt)
+            return parsed.replace(tzinfo=WARSAW_TZ)
+        except ValueError:
+            continue
+
+    for fmt in date_formats:
+        try:
+            parsed_date = datetime.strptime(cleaned, fmt).date()
+            combined = datetime.combine(parsed_date, time.min, tzinfo=WARSAW_TZ)
+            return combined
+        except ValueError:
+            continue
+
+    return None
+
+
 def format_user_record_for_message(record: Dict[str, Any], index: int) -> str:
     tg_id = record.get("tg_id") or "—"
     username = record.get("username") or "—"
@@ -1212,6 +1264,171 @@ async def handle_list_all_users(message: Message) -> None:
             await message.answer(chunk, reply_markup=USERS_MENU_KB)
         else:
             await message.answer(chunk)
+
+
+@dp.message(F.text == "➕ Добавить пользователя")
+async def handle_add_user_button(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await state.set_state(AddUserStates.waiting_for_tg_id)
+    await message.answer(
+        "Введите Telegram ID пользователя (только цифры).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddUserStates.waiting_for_tg_id)
+async def process_add_user_tg_id(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_user_flow(message, state)
+        return
+    if not text.isdigit():
+        await message.answer(
+            "⚠️ Telegram ID должен содержать только цифры. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(tg_id=int(text))
+    await state.set_state(AddUserStates.waiting_for_username)
+    await message.answer(
+        "Введите имя пользователя (как будет отображаться в списке).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddUserStates.waiting_for_username)
+async def process_add_user_username(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_user_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Имя не может быть пустым. Введите имя пользователя.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(username=text)
+    await state.set_state(AddUserStates.waiting_for_position)
+    await message.answer(
+        "Введите должность пользователя.",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddUserStates.waiting_for_position)
+async def process_add_user_position(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_user_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Должность не может быть пустой. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(position=text)
+    await state.set_state(AddUserStates.waiting_for_role)
+    await message.answer(
+        "Укажите роль пользователя (например, администратор или сотрудник).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddUserStates.waiting_for_role)
+async def process_add_user_role(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_user_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Роль не может быть пустой. Введите описание роли.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(role=text)
+    await state.set_state(AddUserStates.waiting_for_created_at)
+    await message.answer(
+        "Введите дату и время добавления пользователя (например, 2024-01-31 или"
+        " 31.01.2024 09:30).\nЕсли хотите использовать текущее время, нажмите"
+        " «Пропустить».",
+        reply_markup=SKIP_OR_CANCEL_KB,
+    )
+
+
+@dp.message(AddUserStates.waiting_for_created_at)
+async def process_add_user_created_at(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_user_flow(message, state)
+        return
+
+    custom_created_at: Optional[datetime]
+    if text == SKIP_TEXT:
+        custom_created_at = None
+    else:
+        parsed = parse_user_created_at_input(text)
+        if parsed is None:
+            await message.answer(
+                "⚠️ Не удалось распознать дату. Используйте формат ГГГГ-ММ-ДД или"
+                " ГГГГ-ММ-ДД ЧЧ:ММ. Можно также ввести 31.01.2024 или 31.01.2024"
+                " 09:30.",
+                reply_markup=SKIP_OR_CANCEL_KB,
+            )
+            return
+        custom_created_at = parsed
+
+    data = await state.get_data()
+    tg_id = data.get("tg_id")
+    username = data.get("username")
+    position = data.get("position")
+    role = data.get("role")
+
+    if tg_id is None or username is None or position is None or role is None:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось получить введённые данные. Попробуйте начать заново.",
+            reply_markup=USERS_MENU_KB,
+        )
+        return
+
+    try:
+        await upsert_user_in_db(
+            tg_id=int(tg_id),
+            username=str(username),
+            position=str(position),
+            role=str(role),
+            created_at=custom_created_at,
+        )
+    except Exception as exc:
+        logging.exception("Failed to add or update user")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить пользователя. Попробуйте позже.\n"
+            f"Техническая информация: {exc}",
+            reply_markup=USERS_MENU_KB,
+        )
+        return
+
+    await state.clear()
+    created_info = (
+        _format_datetime(custom_created_at)
+        if custom_created_at is not None
+        else "текущее время (по умолчанию)"
+    )
+    await message.answer(
+        "✅ Пользователь сохранён.\n"
+        f"👤 Имя: {username}\n"
+        f"🆔 TG ID: {tg_id}\n"
+        f"🏢 Должность: {position}\n"
+        f"🔐 Роль: {role}\n"
+        f"🗓 Дата добавления: {created_info}",
+        reply_markup=USERS_MENU_KB,
+    )
 
 
 @dp.message(F.text == "⬅️ Главное меню")
@@ -2341,6 +2558,10 @@ async def process_remove_color_value(message: Message, state: FSMContext) -> Non
 @dp.message(F.text == CANCEL_TEXT)
 async def handle_cancel(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
+        return
+    current_state = await state.get_state()
+    if current_state and current_state.startswith(AddUserStates.__name__):
+        await _cancel_add_user_flow(message, state)
         return
     await state.clear()
     await send_plastic_settings_overview(message)
