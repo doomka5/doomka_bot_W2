@@ -142,15 +142,19 @@ async def plastics_page() -> HTMLResponse:
         rows_html = []
         for record in records:
             arrival_at = record["arrival_at"]
-            if arrival_at:
-                arrival_tz = (
-                    arrival_at.astimezone()
-                    if getattr(arrival_at, "tzinfo", None)
-                    else arrival_at
-                )
-                arrival_formatted = arrival_tz.strftime("%Y-%m-%d %H:%M")
-            else:
-                arrival_formatted = "—"
+            arrival_formatted = "—"
+            if isinstance(arrival_at, (str, bytes)):
+                arrival_formatted = str(arrival_at) or "—"
+            elif arrival_at is not None:
+                try:
+                    arrival_tz = (
+                        arrival_at.astimezone()
+                        if getattr(arrival_at, "tzinfo", None)
+                        else arrival_at
+                    )
+                    arrival_formatted = arrival_tz.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    arrival_formatted = str(arrival_at)
             comment = record["comment"] or "—"
             rows_html.append(
                 "<tr>"
