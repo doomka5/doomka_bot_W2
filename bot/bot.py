@@ -321,7 +321,8 @@ class AddWarehousePlasticBatchStates(StatesGroup):
 
 
 class SearchWarehousePlasticStates(StatesGroup):
-    waiting_for_query = State()
+    choosing_mode = State()
+    waiting_for_article = State()
 
 
 class CommentWarehousePlasticStates(StatesGroup):
@@ -439,6 +440,19 @@ WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="🔁 Переместить"), KeyboardButton(text="🔍 Найти")],
         [KeyboardButton(text="📤 Экспорт")],
         [KeyboardButton(text="⬅️ Назад к складу")],
+    ],
+    resize_keyboard=True,
+)
+
+SEARCH_BY_ARTICLE_TEXT = "🔢 Поиск по артикулу"
+ADVANCED_SEARCH_TEXT = "🧭 Расширенный поиск"
+BACK_TO_PLASTICS_MENU_TEXT = "⬅️ Назад к меню пластика"
+
+WAREHOUSE_PLASTICS_SEARCH_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=SEARCH_BY_ARTICLE_TEXT)],
+        [KeyboardButton(text=ADVANCED_SEARCH_TEXT)],
+        [KeyboardButton(text=BACK_TO_PLASTICS_MENU_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -1834,10 +1848,42 @@ async def handle_export_warehouse_plastics(message: Message) -> None:
 
 @dp.message(F.text == "🔍 Найти")
 async def handle_search_warehouse_plastic(message: Message, state: FSMContext) -> None:
-    await state.set_state(SearchWarehousePlasticStates.waiting_for_query)
+    await state.set_state(SearchWarehousePlasticStates.choosing_mode)
     await message.answer(
-        "Введите часть артикула, материала, цвета или комментария для поиска",
-        reply_markup=CANCEL_KB,
+        "Выберите вариант поиска:",
+        reply_markup=WAREHOUSE_PLASTICS_SEARCH_KB,
+    )
+
+
+@dp.message(SearchWarehousePlasticStates.choosing_mode)
+async def process_search_menu_choice(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_plastic_flow(message, state)
+        return
+    if text == BACK_TO_PLASTICS_MENU_TEXT:
+        await state.clear()
+        await message.answer(
+            "Вы вернулись в меню пластиков.", reply_markup=WAREHOUSE_PLASTICS_KB
+        )
+        return
+    if text == SEARCH_BY_ARTICLE_TEXT:
+        await state.set_state(SearchWarehousePlasticStates.waiting_for_article)
+        await message.answer(
+            "Введите номер артикула для поиска.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if text == ADVANCED_SEARCH_TEXT:
+        await message.answer(
+            "Расширенный поиск находится в разработке."
+            " Как только он будет готов, мы сообщим дополнительно.",
+            reply_markup=WAREHOUSE_PLASTICS_SEARCH_KB,
+        )
+        return
+    await message.answer(
+        "Пожалуйста, выберите один из вариантов ниже.",
+        reply_markup=WAREHOUSE_PLASTICS_SEARCH_KB,
     )
 
 
@@ -1871,31 +1917,31 @@ async def handle_write_off_warehouse_plastic(message: Message, state: FSMContext
     )
 
 
-@dp.message(SearchWarehousePlasticStates.waiting_for_query)
-async def process_search_warehouse_plastic(message: Message, state: FSMContext) -> None:
+@dp.message(SearchWarehousePlasticStates.waiting_for_article)
+async def process_search_plastic_by_article(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if text == CANCEL_TEXT:
         await _cancel_search_plastic_flow(message, state)
         return
-    if not text:
+    if not text.isdigit():
         await message.answer(
-            "⚠️ Запрос не может быть пустым. Введите текст для поиска.",
+            "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
             reply_markup=CANCEL_KB,
         )
         return
-    results = await search_warehouse_plastic_records(text, limit=5)
-    if not results:
+    record = await fetch_warehouse_plastic_by_article(text)
+    if record is None:
         await message.answer(
-            "Ничего не найдено. Попробуйте другой запрос.", reply_markup=CANCEL_KB
+            "ℹ️ Пластик с таким артикулом не найден. Попробуйте другой номер.",
+            reply_markup=CANCEL_KB,
         )
         return
-    formatted = "\n\n".join(format_plastic_record_for_message(item) for item in results)
     await message.answer(
-        f"🔍 Найдено записей: {len(results)}\n\n{formatted}",
+        "Найдена запись:\n\n" f"{format_plastic_record_for_message(record)}",
         reply_markup=CANCEL_KB,
     )
     await message.answer(
-        "Введите новый запрос для продолжения поиска или нажмите «❌ Отмена».",
+        "Введите другой артикул для нового поиска или нажмите «❌ Отмена».",
         reply_markup=CANCEL_KB,
     )
 
