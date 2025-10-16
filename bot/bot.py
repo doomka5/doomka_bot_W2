@@ -435,10 +435,17 @@ WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
 CANCEL_TEXT = "❌ Отмена"
 SKIP_TEXT = "Пропустить"
 
-CANCEL_KB = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=CANCEL_TEXT)]],
-    resize_keyboard=True,
-)
+def build_article_input_keyboard(
+    suggested_article: Optional[str] = None,
+) -> ReplyKeyboardMarkup:
+    keyboard: list[list[KeyboardButton]] = []
+    if suggested_article:
+        keyboard.append([KeyboardButton(text=suggested_article)])
+    keyboard.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+CANCEL_KB = build_article_input_keyboard()
 
 SKIP_OR_CANCEL_KB = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=SKIP_TEXT)], [KeyboardButton(text=CANCEL_TEXT)]],
@@ -553,6 +560,25 @@ async def fetch_plastic_storage_locations() -> list[str]:
             "SELECT name FROM plastic_storage_locations ORDER BY LOWER(name)"
         )
     return [row["name"] for row in rows]
+
+
+async def fetch_max_plastic_article() -> Optional[int]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        value = await conn.fetchval(
+            """
+            SELECT MAX(article::BIGINT)
+            FROM warehouse_plastics
+            WHERE article ~ '^[0-9]+$'
+            """
+        )
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 async def insert_plastic_material_type(name: str) -> bool:
@@ -2123,9 +2149,21 @@ async def process_write_off_project(message: Message, state: FSMContext) -> None
 async def handle_add_warehouse_plastic(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AddWarehousePlasticStates.waiting_for_article)
+    suggested_article: Optional[str] = None
+    last_article = await fetch_max_plastic_article()
+    if last_article is not None:
+        suggested_article = str(last_article + 1)
+    await state.update_data(article_suggestion=suggested_article)
+    prompt_lines = ["Введите номер артикула (только цифры)."]
+    if last_article is not None and suggested_article is not None:
+        prompt_lines.append("")
+        prompt_lines.append(
+            "Последний добавленный артикул: "
+            f"{last_article}. Нажмите кнопку ниже, чтобы использовать следующий номер."
+        )
     await message.answer(
-        "Введите номер артикула (только цифры).",
-        reply_markup=CANCEL_KB,
+        "\n".join(prompt_lines),
+        reply_markup=build_article_input_keyboard(suggested_article),
     )
 
 
@@ -2136,9 +2174,11 @@ async def process_plastic_article(message: Message, state: FSMContext) -> None:
         return
     article = (message.text or "").strip()
     if not article.isdigit():
+        data = await state.get_data()
+        suggestion = data.get("article_suggestion")
         await message.answer(
             "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
-            reply_markup=CANCEL_KB,
+            reply_markup=build_article_input_keyboard(suggestion),
         )
         return
     materials = await fetch_plastic_material_types()
@@ -2149,7 +2189,7 @@ async def process_plastic_article(message: Message, state: FSMContext) -> None:
             reply_markup=WAREHOUSE_PLASTICS_KB,
         )
         return
-    await state.update_data(article=article)
+    await state.update_data(article=article, article_suggestion=None)
     await state.set_state(AddWarehousePlasticStates.waiting_for_material)
     await message.answer(
         "Выберите тип материала:",
