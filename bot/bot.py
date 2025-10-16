@@ -323,6 +323,11 @@ class AddWarehousePlasticBatchStates(StatesGroup):
 class SearchWarehousePlasticStates(StatesGroup):
     choosing_mode = State()
     waiting_for_article = State()
+    waiting_for_material = State()
+    waiting_for_thickness = State()
+    waiting_for_color = State()
+    waiting_for_min_length = State()
+    waiting_for_min_width = State()
 
 
 class CommentWarehousePlasticStates(StatesGroup):
@@ -456,6 +461,10 @@ WAREHOUSE_PLASTICS_SEARCH_KB = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
 )
+
+ADVANCED_SEARCH_SKIP_MATERIAL_TEXT = "➡️ Далее"
+ADVANCED_SEARCH_ALL_THICKNESSES_TEXT = "📏 Все толщины"
+ADVANCED_SEARCH_ALL_COLORS_TEXT = "🎨 Все цвета"
 
 CANCEL_TEXT = "❌ Отмена"
 SKIP_TEXT = "Пропустить"
@@ -784,6 +793,34 @@ async def fetch_material_colors(material_name: str) -> list[str]:
     return [row["color"] for row in rows]
 
 
+async def fetch_all_material_thicknesses() -> list[Decimal]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT thickness
+            FROM plastic_material_thicknesses
+            ORDER BY thickness
+            """
+        )
+    return [row["thickness"] for row in rows]
+
+
+async def fetch_all_material_colors() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT color
+            FROM plastic_material_colors
+            ORDER BY LOWER(color)
+            """
+        )
+    return [row["color"] for row in rows]
+
+
 async def insert_material_color(material_name: str, color: str) -> str:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -993,6 +1030,65 @@ async def fetch_warehouse_plastic_by_article(article: str) -> Optional[Dict[str,
     if row is None:
         return None
     return dict(row)
+
+
+async def search_warehouse_plastics_advanced(
+    material: Optional[str] = None,
+    thickness: Optional[Decimal] = None,
+    color: Optional[str] = None,
+    min_length: Optional[Decimal] = None,
+    min_width: Optional[Decimal] = None,
+) -> list[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    conditions: list[str] = []
+    params: list[Any] = []
+    param_index = 1
+    if material:
+        conditions.append(f"LOWER(material) = LOWER(${param_index})")
+        params.append(material)
+        param_index += 1
+    if thickness is not None:
+        conditions.append(f"thickness = ${param_index}")
+        params.append(thickness)
+        param_index += 1
+    if color:
+        conditions.append(f"LOWER(color) = LOWER(${param_index})")
+        params.append(color)
+        param_index += 1
+    if min_length is not None:
+        conditions.append(f"length >= ${param_index}")
+        params.append(min_length)
+        param_index += 1
+    if min_width is not None:
+        conditions.append(f"width >= ${param_index}")
+        params.append(min_width)
+        param_index += 1
+    where_clause = ""
+    if conditions:
+        where_clause = " WHERE " + " AND ".join(conditions)
+    query = (
+        """
+        SELECT
+            id,
+            article,
+            material,
+            thickness,
+            color,
+            length,
+            width,
+            warehouse,
+            comment,
+            employee_name,
+            arrival_at
+        FROM warehouse_plastics
+        """
+        + where_clause
+        + " ORDER BY length DESC NULLS LAST, width DESC NULLS LAST, arrival_at DESC NULLS LAST, id DESC"
+    )
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+    return [dict(row) for row in rows]
 
 
 async def update_warehouse_plastic_comment(
@@ -1436,6 +1532,26 @@ def parse_thickness_input(raw_text: str) -> Optional[Decimal]:
     return value.quantize(Decimal("0.01"))
 
 
+def parse_dimension_filter_value(raw_text: str) -> Optional[Decimal]:
+    if raw_text is None:
+        return None
+    cleaned = raw_text.strip().lower()
+    for suffix in ("мм", "mm"):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)]
+            break
+    cleaned = cleaned.replace(" ", "").replace(",", ".")
+    if not cleaned:
+        return None
+    try:
+        value = Decimal(cleaned)
+    except (InvalidOperation, ValueError):
+        return None
+    if value < 0:
+        return None
+    return value.quantize(Decimal("0.01"))
+
+
 def parse_positive_integer(raw_text: str) -> Optional[int]:
     if raw_text is None:
         return None
@@ -1468,6 +1584,33 @@ def build_colors_keyboard(colors: list[str]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for value in colors:
         rows.append([KeyboardButton(text=value)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def build_advanced_materials_keyboard(materials: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for name in materials:
+        rows.append([KeyboardButton(text=name)])
+    rows.append([KeyboardButton(text=ADVANCED_SEARCH_SKIP_MATERIAL_TEXT)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def build_advanced_thickness_keyboard(thicknesses: list[Decimal]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for value in thicknesses:
+        rows.append([KeyboardButton(text=format_thickness_value(value))])
+    rows.append([KeyboardButton(text=ADVANCED_SEARCH_ALL_THICKNESSES_TEXT)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def build_advanced_colors_keyboard(colors: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for value in colors:
+        rows.append([KeyboardButton(text=value)])
+    rows.append([KeyboardButton(text=ADVANCED_SEARCH_ALL_COLORS_TEXT)])
     rows.append([KeyboardButton(text=CANCEL_TEXT)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -1875,11 +2018,7 @@ async def process_search_menu_choice(message: Message, state: FSMContext) -> Non
         )
         return
     if text == ADVANCED_SEARCH_TEXT:
-        await message.answer(
-            "Расширенный поиск находится в разработке."
-            " Как только он будет готов, мы сообщим дополнительно.",
-            reply_markup=WAREHOUSE_PLASTICS_SEARCH_KB,
-        )
+        await _start_advanced_search_flow(message, state)
         return
     await message.answer(
         "Пожалуйста, выберите один из вариантов ниже.",
@@ -1944,6 +2083,267 @@ async def process_search_plastic_by_article(message: Message, state: FSMContext)
         "Введите другой артикул для нового поиска или нажмите «❌ Отмена».",
         reply_markup=CANCEL_KB,
     )
+
+
+async def _start_advanced_search_flow(message: Message, state: FSMContext) -> None:
+    materials = await fetch_plastic_material_types()
+    await state.update_data(
+        advanced_material=None,
+        advanced_thickness=None,
+        advanced_color=None,
+        advanced_min_length=None,
+        advanced_min_width=None,
+    )
+    if not materials:
+        await message.answer(
+            "Справочник материалов пуст. Поиск будет выполнен по всем материалам."
+        )
+        await _prompt_advanced_thickness_choice(message, state, None)
+        return
+    await state.set_state(SearchWarehousePlasticStates.waiting_for_material)
+    await message.answer(
+        "Выберите материал или нажмите «➡️ Далее», чтобы искать по всем материалам.",
+        reply_markup=build_advanced_materials_keyboard(materials),
+    )
+
+
+async def _prompt_advanced_thickness_choice(
+    message: Message, state: FSMContext, material: Optional[str]
+) -> None:
+    if material:
+        thicknesses = await fetch_material_thicknesses(material)
+    else:
+        thicknesses = await fetch_all_material_thicknesses()
+    if not thicknesses:
+        await state.update_data(advanced_thickness=None)
+        await message.answer(
+            "Для выбранного материала не указаны толщины. Поиск будет выполнен по всем толщинам."
+        )
+        await _prompt_advanced_color_choice(message, state, material)
+        return
+    await state.set_state(SearchWarehousePlasticStates.waiting_for_thickness)
+    await message.answer(
+        "Выберите толщину или нажмите «📏 Все толщины».",
+        reply_markup=build_advanced_thickness_keyboard(thicknesses),
+    )
+
+
+async def _prompt_advanced_color_choice(
+    message: Message, state: FSMContext, material: Optional[str]
+) -> None:
+    if material:
+        colors = await fetch_material_colors(material)
+    else:
+        colors = await fetch_all_material_colors()
+    if not colors:
+        await state.update_data(advanced_color=None)
+        await message.answer(
+            "Для выбранного материала не указаны цвета. Поиск будет выполнен по всем цветам."
+        )
+        await _prompt_advanced_min_length(message, state)
+        return
+    await state.set_state(SearchWarehousePlasticStates.waiting_for_color)
+    await message.answer(
+        "Выберите цвет или нажмите «🎨 Все цвета».",
+        reply_markup=build_advanced_colors_keyboard(colors),
+    )
+
+
+async def _prompt_advanced_min_length(message: Message, state: FSMContext) -> None:
+    await state.set_state(SearchWarehousePlasticStates.waiting_for_min_length)
+    await message.answer(
+        "Укажите минимальную длину листа в миллиметрах или нажмите «Пропустить».",
+        reply_markup=SKIP_OR_CANCEL_KB,
+    )
+
+
+async def _prompt_advanced_min_width(message: Message, state: FSMContext) -> None:
+    await state.set_state(SearchWarehousePlasticStates.waiting_for_min_width)
+    await message.answer(
+        "Укажите минимальную ширину листа в миллиметрах или нажмите «Пропустить».",
+        reply_markup=SKIP_OR_CANCEL_KB,
+    )
+
+
+async def _perform_advanced_search(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    material = data.get("advanced_material")
+    thickness = data.get("advanced_thickness")
+    color = data.get("advanced_color")
+    min_length = data.get("advanced_min_length")
+    min_width = data.get("advanced_min_width")
+    try:
+        records = await search_warehouse_plastics_advanced(
+            material=material,
+            thickness=thickness,
+            color=color,
+            min_length=min_length,
+            min_width=min_width,
+        )
+    except Exception:
+        logging.exception("Failed to run advanced search for plastics")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось выполнить расширенный поиск. Попробуйте позже.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    await state.clear()
+    if not records:
+        await message.answer(
+            "По заданным параметрам ничего не найдено.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+    else:
+        header_parts = ["Результаты расширенного поиска:"]
+        if material:
+            header_parts.append(f"Материал: {material}")
+        if thickness is not None:
+            header_parts.append(f"Толщина: {format_thickness_value(thickness)}")
+        if color:
+            header_parts.append(f"Цвет: {color}")
+        if min_length is not None:
+            header_parts.append(f"Мин. длина: {format_dimension_value(min_length)}")
+        if min_width is not None:
+            header_parts.append(f"Мин. ширина: {format_dimension_value(min_width)}")
+        header_text = "\n".join(header_parts)
+        records_text = []
+        for index, record in enumerate(records, start=1):
+            records_text.append(
+                f"{index}.\n{format_plastic_record_for_message(record)}"
+            )
+        full_text = f"{header_text}\n\n" + "\n\n".join(records_text)
+        chunks = split_text_into_messages(full_text)
+        for idx, chunk in enumerate(chunks):
+            if idx == 0:
+                await message.answer(chunk, reply_markup=WAREHOUSE_PLASTICS_KB)
+            else:
+                await message.answer(chunk)
+    await state.set_state(SearchWarehousePlasticStates.choosing_mode)
+    await message.answer(
+        "Выберите вариант поиска:",
+        reply_markup=WAREHOUSE_PLASTICS_SEARCH_KB,
+    )
+
+
+@dp.message(SearchWarehousePlasticStates.waiting_for_material)
+async def process_advanced_search_material(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_plastic_flow(message, state)
+        return
+    if text == ADVANCED_SEARCH_SKIP_MATERIAL_TEXT:
+        await state.update_data(advanced_material=None)
+        await _prompt_advanced_thickness_choice(message, state, None)
+        return
+    materials = await fetch_plastic_material_types()
+    match = next((item for item in materials if item.lower() == text.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Материал не найден. Выберите один из списка или нажмите «➡️ Далее».",
+            reply_markup=build_advanced_materials_keyboard(materials),
+        )
+        return
+    await state.update_data(advanced_material=match)
+    await _prompt_advanced_thickness_choice(message, state, match)
+
+
+@dp.message(SearchWarehousePlasticStates.waiting_for_thickness)
+async def process_advanced_search_thickness(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_plastic_flow(message, state)
+        return
+    if text == ADVANCED_SEARCH_ALL_THICKNESSES_TEXT:
+        await state.update_data(advanced_thickness=None)
+        data = await state.get_data()
+        material = data.get("advanced_material")
+        await _prompt_advanced_color_choice(message, state, material)
+        return
+    data = await state.get_data()
+    material = data.get("advanced_material")
+    if material:
+        thicknesses = await fetch_material_thicknesses(material)
+    else:
+        thicknesses = await fetch_all_material_thicknesses()
+    value = parse_thickness_input(text)
+    if value is None or all(item != value for item in thicknesses):
+        await message.answer(
+            "ℹ️ Используйте кнопки для выбора толщины или нажмите «📏 Все толщины».",
+            reply_markup=build_advanced_thickness_keyboard(thicknesses),
+        )
+        return
+    await state.update_data(advanced_thickness=value)
+    await _prompt_advanced_color_choice(message, state, material)
+
+
+@dp.message(SearchWarehousePlasticStates.waiting_for_color)
+async def process_advanced_search_color(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_plastic_flow(message, state)
+        return
+    if text == ADVANCED_SEARCH_ALL_COLORS_TEXT:
+        await state.update_data(advanced_color=None)
+        await _prompt_advanced_min_length(message, state)
+        return
+    data = await state.get_data()
+    material = data.get("advanced_material")
+    if material:
+        colors = await fetch_material_colors(material)
+    else:
+        colors = await fetch_all_material_colors()
+    match = next((item for item in colors if item.lower() == text.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Цвет не найден. Выберите из списка или нажмите «🎨 Все цвета».",
+            reply_markup=build_advanced_colors_keyboard(colors),
+        )
+        return
+    await state.update_data(advanced_color=match)
+    await _prompt_advanced_min_length(message, state)
+
+
+@dp.message(SearchWarehousePlasticStates.waiting_for_min_length)
+async def process_advanced_search_min_length(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_plastic_flow(message, state)
+        return
+    if text == SKIP_TEXT:
+        await state.update_data(advanced_min_length=None)
+        await _prompt_advanced_min_width(message, state)
+        return
+    value = parse_dimension_filter_value(text)
+    if value is None:
+        await message.answer(
+            "⚠️ Введите длину числом или нажмите «Пропустить».",
+            reply_markup=SKIP_OR_CANCEL_KB,
+        )
+        return
+    await state.update_data(advanced_min_length=value)
+    await _prompt_advanced_min_width(message, state)
+
+
+@dp.message(SearchWarehousePlasticStates.waiting_for_min_width)
+async def process_advanced_search_min_width(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_plastic_flow(message, state)
+        return
+    if text == SKIP_TEXT:
+        await state.update_data(advanced_min_width=None)
+        await _perform_advanced_search(message, state)
+        return
+    value = parse_dimension_filter_value(text)
+    if value is None:
+        await message.answer(
+            "⚠️ Введите ширину числом или нажмите «Пропустить».",
+            reply_markup=SKIP_OR_CANCEL_KB,
+        )
+        return
+    await state.update_data(advanced_min_width=value)
+    await _perform_advanced_search(message, state)
 
 
 @dp.message(CommentWarehousePlasticStates.waiting_for_article)
