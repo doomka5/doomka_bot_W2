@@ -163,6 +163,36 @@ async def init_database() -> None:
                 ADD COLUMN IF NOT EXISTS arrival_at TIMESTAMPTZ
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS written_off_plastics (
+                    id SERIAL PRIMARY KEY,
+                    source_id INTEGER,
+                    article TEXT NOT NULL,
+                    material TEXT,
+                    thickness NUMERIC(10, 2),
+                    color TEXT,
+                    length NUMERIC(10, 2),
+                    width NUMERIC(10, 2),
+                    warehouse TEXT,
+                    comment TEXT,
+                    employee_id BIGINT,
+                    employee_name TEXT,
+                    arrival_date DATE,
+                    arrival_at TIMESTAMPTZ,
+                    project TEXT,
+                    written_off_by_id BIGINT,
+                    written_off_by_name TEXT,
+                    written_off_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                ALTER TABLE written_off_plastics
+                ADD COLUMN IF NOT EXISTS written_off_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                """
+            )
             # Таблица типов пластиков
             await conn.execute(
                 """
@@ -291,6 +321,11 @@ class CommentWarehousePlasticStates(StatesGroup):
 class MoveWarehousePlasticStates(StatesGroup):
     waiting_for_article = State()
     waiting_for_new_location = State()
+
+
+class WriteOffWarehousePlasticStates(StatesGroup):
+    waiting_for_article = State()
+    waiting_for_project = State()
 
 
 # === Клавиатуры ===
@@ -447,6 +482,11 @@ async def _cancel_comment_plastic_flow(message: Message, state: FSMContext) -> N
 async def _cancel_move_plastic_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("❌ Перемещение отменено.", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+async def _cancel_write_off_plastic_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("❌ Списание отменено.", reply_markup=WAREHOUSE_PLASTICS_KB)
 
 
 # === Работа с БД ===
@@ -954,6 +994,107 @@ async def update_warehouse_plastic_location(
     return dict(row)
 
 
+async def write_off_warehouse_plastic(
+    record_id: int,
+    project: str,
+    written_off_by_id: Optional[int],
+    written_off_by_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    now_warsaw = datetime.now(WARSAW_TZ)
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            original_row = await conn.fetchrow(
+                """
+                DELETE FROM warehouse_plastics
+                WHERE id = $1
+                RETURNING
+                    id,
+                    article,
+                    material,
+                    thickness,
+                    color,
+                    length,
+                    width,
+                    warehouse,
+                    comment,
+                    employee_id,
+                    employee_name,
+                    arrival_date,
+                    arrival_at
+                """,
+                record_id,
+            )
+            if original_row is None:
+                return None
+            inserted_row = await conn.fetchrow(
+                """
+                INSERT INTO written_off_plastics (
+                    source_id,
+                    article,
+                    material,
+                    thickness,
+                    color,
+                    length,
+                    width,
+                    warehouse,
+                    comment,
+                    employee_id,
+                    employee_name,
+                    arrival_date,
+                    arrival_at,
+                    project,
+                    written_off_by_id,
+                    written_off_by_name,
+                    written_off_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                )
+                RETURNING
+                    id,
+                    source_id,
+                    article,
+                    material,
+                    thickness,
+                    color,
+                    length,
+                    width,
+                    warehouse,
+                    comment,
+                    employee_id,
+                    employee_name,
+                    arrival_date,
+                    arrival_at,
+                    project,
+                    written_off_by_id,
+                    written_off_by_name,
+                    written_off_at
+                """,
+                original_row["id"],
+                original_row["article"],
+                original_row["material"],
+                original_row["thickness"],
+                original_row["color"],
+                original_row["length"],
+                original_row["width"],
+                original_row["warehouse"],
+                original_row["comment"],
+                original_row["employee_id"],
+                original_row["employee_name"],
+                original_row["arrival_date"],
+                original_row["arrival_at"],
+                project,
+                written_off_by_id,
+                written_off_by_name,
+                now_warsaw,
+            )
+    if inserted_row is None:
+        return None
+    return dict(inserted_row)
+
+
 def format_materials_list(materials: list[str]) -> str:
     if not materials:
         return "—"
@@ -1187,6 +1328,33 @@ def format_plastic_record_for_message(record: Dict[str, Any]) -> str:
         f"Комментарий: {record.get('comment') or '—'}\n"
         f"Добавил: {record.get('employee_name') or '—'}\n"
         f"Добавлено: {arrival_text}"
+    )
+
+
+def format_written_off_plastic_record(record: Dict[str, Any]) -> str:
+    base_info = format_plastic_record_for_message(record)
+    project = record.get("project") or "—"
+    written_off_at = record.get("written_off_at")
+    if written_off_at:
+        try:
+            written_off_local = written_off_at.astimezone(WARSAW_TZ)
+        except Exception:
+            written_off_local = written_off_at
+        written_off_text = written_off_local.strftime("%Y-%m-%d %H:%M")
+    else:
+        written_off_text = "—"
+    written_off_by_name = record.get("written_off_by_name") or "—"
+    written_off_by_id = record.get("written_off_by_id")
+    if written_off_by_id is None:
+        written_off_by_id_text = "—"
+    else:
+        written_off_by_id_text = str(written_off_by_id)
+    return (
+        f"{base_info}\n"
+        f"Проект: {project}\n"
+        f"Списал: {written_off_by_name}\n"
+        f"ID списавшего: {written_off_by_id_text}\n"
+        f"Списано: {written_off_text}"
     )
 
 
@@ -1649,6 +1817,16 @@ async def handle_move_warehouse_plastic(message: Message, state: FSMContext) -> 
     )
 
 
+@dp.message(F.text == "➖ Списать")
+async def handle_write_off_warehouse_plastic(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(WriteOffWarehousePlasticStates.waiting_for_article)
+    await message.answer(
+        "Введите номер артикула, чтобы списать пластик со склада.",
+        reply_markup=CANCEL_KB,
+    )
+
+
 @dp.message(SearchWarehousePlasticStates.waiting_for_query)
 async def process_search_warehouse_plastic(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -1854,6 +2032,89 @@ async def process_move_new_location(message: Message, state: FSMContext) -> None
         f"Предыдущее место: {previous_location_display}\n"
         f"Новое место: {match}\n\n"
         f"Актуальные данные:\n{formatted}",
+        reply_markup=WAREHOUSE_PLASTICS_KB,
+    )
+
+
+@dp.message(WriteOffWarehousePlasticStates.waiting_for_article)
+async def process_write_off_article(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_write_off_plastic_flow(message, state)
+        return
+    article = (message.text or "").strip()
+    if not article.isdigit():
+        await message.answer(
+            "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    record = await fetch_warehouse_plastic_by_article(article)
+    if record is None:
+        await message.answer(
+            "ℹ️ Пластик с таким артикулом не найден. Попробуйте другой артикул.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(plastic_id=record["id"], article=record.get("article"))
+    formatted = format_plastic_record_for_message(record)
+    await state.set_state(WriteOffWarehousePlasticStates.waiting_for_project)
+    await message.answer(
+        "Найдена запись:\n\n"
+        f"{formatted}\n\n"
+        "Укажите проект, на который выполняется списание.",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(WriteOffWarehousePlasticStates.waiting_for_project)
+async def process_write_off_project(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_write_off_plastic_flow(message, state)
+        return
+    project = (message.text or "").strip()
+    if not project:
+        await message.answer(
+            "⚠️ Название проекта не может быть пустым. Укажите проект.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    data = await state.get_data()
+    record_id = data.get("plastic_id")
+    article = data.get("article")
+    if record_id is None or article is None:
+        await _cancel_write_off_plastic_flow(message, state)
+        return
+    written_off_by_id = message.from_user.id if message.from_user else None
+    written_off_by_name = message.from_user.full_name if message.from_user else None
+    try:
+        result = await write_off_warehouse_plastic(
+            record_id=record_id,
+            project=project,
+            written_off_by_id=written_off_by_id,
+            written_off_by_name=written_off_by_name,
+        )
+    except Exception:
+        logging.exception("Failed to write off plastic record")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось списать пластик. Попробуйте позже.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    if result is None:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Не удалось найти запись для списания. Возможно, она уже была изменена.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    await state.clear()
+    formatted = format_written_off_plastic_record(result)
+    await message.answer(
+        "✅ Пластик списан со склада.\n\n"
+        f"Артикул: {article}\n"
+        f"Проект: {project}\n\n"
+        f"Данные списанной записи:\n{formatted}",
         reply_markup=WAREHOUSE_PLASTICS_KB,
     )
 
