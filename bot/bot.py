@@ -309,6 +309,17 @@ class AddWarehousePlasticStates(StatesGroup):
     waiting_for_comment = State()
 
 
+class AddWarehousePlasticBatchStates(StatesGroup):
+    waiting_for_quantity = State()
+    waiting_for_material = State()
+    waiting_for_thickness = State()
+    waiting_for_color = State()
+    waiting_for_length = State()
+    waiting_for_width = State()
+    waiting_for_storage = State()
+    waiting_for_comment = State()
+
+
 class SearchWarehousePlasticStates(StatesGroup):
     waiting_for_query = State()
 
@@ -423,8 +434,8 @@ WAREHOUSE_SETTINGS_PLASTIC_STORAGE_KB = ReplyKeyboardMarkup(
 
 WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="➕ Добавить"), KeyboardButton(text="➖ Списать")],
-        [KeyboardButton(text="💬 Комментировать")],
+        [KeyboardButton(text="➕ Добавить"), KeyboardButton(text="++добавить пачку")],
+        [KeyboardButton(text="➖ Списать"), KeyboardButton(text="💬 Комментировать")],
         [KeyboardButton(text="🔁 Переместить"), KeyboardButton(text="🔍 Найти")],
         [KeyboardButton(text="📤 Экспорт")],
         [KeyboardButton(text="⬅️ Назад к складу")],
@@ -471,6 +482,13 @@ async def _cancel_add_plastic_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "❌ Добавление пластика отменено.", reply_markup=WAREHOUSE_PLASTICS_KB
+    )
+
+
+async def _cancel_add_plastic_batch_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Добавление пачки пластика отменено.", reply_markup=WAREHOUSE_PLASTICS_KB
     )
 
 
@@ -2412,6 +2430,303 @@ async def process_plastic_comment(message: Message, state: FSMContext) -> None:
     await message.answer(
         "✅ Пластик добавлен на склад.\n\n"
         f"Артикул: {article}\n"
+        f"Материал: {material}\n"
+        f"Толщина: {format_thickness_value(thickness)}\n"
+        f"Цвет: {color}\n"
+        f"Длина: {length} мм\n"
+        f"Ширина: {width} мм\n"
+        f"Место хранения: {storage}\n"
+        f"Комментарий: {summary_comment}\n"
+        f"Добавил: {summary_employee}\n"
+        f"Добавлено: {arrival_formatted}",
+        reply_markup=WAREHOUSE_PLASTICS_KB,
+    )
+
+
+@dp.message(F.text == "++добавить пачку")
+async def handle_add_warehouse_plastic_batch(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    last_article = await fetch_max_plastic_article()
+    await state.update_data(batch_last_article=last_article)
+    await state.set_state(AddWarehousePlasticBatchStates.waiting_for_quantity)
+    prompt_lines = ["Сколько листов пластика нужно добавить? Введите число."]
+    if last_article is None:
+        prompt_lines.append("")
+        prompt_lines.append("Сейчас нет добавленных артикулов. Нумерация начнётся с 1.")
+    else:
+        prompt_lines.append("")
+        prompt_lines.append(
+            "Последний добавленный артикул: "
+            f"{last_article}. Новые листы получат номера начиная с {last_article + 1}."
+        )
+    await message.answer("\n".join(prompt_lines), reply_markup=CANCEL_KB)
+
+
+@dp.message(AddWarehousePlasticBatchStates.waiting_for_quantity)
+async def process_plastic_batch_quantity(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    quantity = parse_positive_integer(message.text or "")
+    if quantity is None:
+        await message.answer(
+            "⚠️ Количество должно быть положительным числом. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    materials = await fetch_plastic_material_types()
+    if not materials:
+        await state.clear()
+        await message.answer(
+            "Справочник материалов пуст. Добавьте материалы в настройках склада.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    await state.update_data(batch_quantity=quantity)
+    await state.set_state(AddWarehousePlasticBatchStates.waiting_for_material)
+    await message.answer(
+        "Выберите тип материала:",
+        reply_markup=build_materials_keyboard(materials),
+    )
+
+
+@dp.message(AddWarehousePlasticBatchStates.waiting_for_material)
+async def process_plastic_batch_material(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    materials = await fetch_plastic_material_types()
+    raw = (message.text or "").strip()
+    match = next((item for item in materials if item.lower() == raw.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Такой материал не найден. Выберите один из списка.",
+            reply_markup=build_materials_keyboard(materials),
+        )
+        return
+    thicknesses = await fetch_material_thicknesses(match)
+    if not thicknesses:
+        await state.clear()
+        await message.answer(
+            "Для выбранного материала не указаны толщины. Добавьте их в настройках склада.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    await state.update_data(batch_material=match)
+    await state.set_state(AddWarehousePlasticBatchStates.waiting_for_thickness)
+    await message.answer(
+        "Выберите толщину из списка:",
+        reply_markup=build_thickness_keyboard(thicknesses),
+    )
+
+
+@dp.message(AddWarehousePlasticBatchStates.waiting_for_thickness)
+async def process_plastic_batch_thickness(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    data = await state.get_data()
+    material = data.get("batch_material")
+    if not material:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    thicknesses = await fetch_material_thicknesses(material)
+    value = parse_thickness_input(message.text or "")
+    if value is None or all(item != value for item in thicknesses):
+        await message.answer(
+            "⚠️ Выберите толщину, используя кнопки ниже.",
+            reply_markup=build_thickness_keyboard(thicknesses),
+        )
+        return
+    colors = await fetch_material_colors(material)
+    if not colors:
+        await state.clear()
+        await message.answer(
+            "Для выбранного материала не указаны цвета. Добавьте их в настройках склада.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    await state.update_data(batch_thickness=value)
+    await state.set_state(AddWarehousePlasticBatchStates.waiting_for_color)
+    await message.answer(
+        "Выберите цвет:",
+        reply_markup=build_colors_keyboard(colors),
+    )
+
+
+@dp.message(AddWarehousePlasticBatchStates.waiting_for_color)
+async def process_plastic_batch_color(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    data = await state.get_data()
+    material = data.get("batch_material")
+    if not material:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    colors = await fetch_material_colors(material)
+    raw = (message.text or "").strip()
+    match = next((item for item in colors if item.lower() == raw.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Цвет не найден. Выберите один из списка.",
+            reply_markup=build_colors_keyboard(colors),
+        )
+        return
+    await state.update_data(batch_color=match)
+    await state.set_state(AddWarehousePlasticBatchStates.waiting_for_length)
+    await message.answer(
+        "Укажите длину листа в миллиметрах (только число).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehousePlasticBatchStates.waiting_for_length)
+async def process_plastic_batch_length(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    value = parse_positive_integer(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Длина должна быть положительным числом. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(batch_length=value)
+    await state.set_state(AddWarehousePlasticBatchStates.waiting_for_width)
+    await message.answer(
+        "Укажите ширину листа в миллиметрах (только число).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehousePlasticBatchStates.waiting_for_width)
+async def process_plastic_batch_width(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    value = parse_positive_integer(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Ширина должна быть положительным числом. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    locations = await fetch_plastic_storage_locations()
+    if not locations:
+        await state.clear()
+        await message.answer(
+            "Справочник мест хранения пуст. Добавьте места в настройках склада.",
+            reply_markup=WAREHOUSE_PLASTICS_KB,
+        )
+        return
+    await state.update_data(batch_width=value)
+    await state.set_state(AddWarehousePlasticBatchStates.waiting_for_storage)
+    await message.answer(
+        "Выберите место хранения:",
+        reply_markup=build_storage_locations_keyboard(locations),
+    )
+
+
+@dp.message(AddWarehousePlasticBatchStates.waiting_for_storage)
+async def process_plastic_batch_storage(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    locations = await fetch_plastic_storage_locations()
+    raw = (message.text or "").strip()
+    match = next((item for item in locations if item.lower() == raw.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Такое место хранения не найдено. Выберите одно из списка.",
+            reply_markup=build_storage_locations_keyboard(locations),
+        )
+        return
+    await state.update_data(batch_storage=match)
+    await state.set_state(AddWarehousePlasticBatchStates.waiting_for_comment)
+    await message.answer(
+        "Добавьте комментарий (необязательно) или нажмите «Пропустить».",
+        reply_markup=SKIP_OR_CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehousePlasticBatchStates.waiting_for_comment)
+async def process_plastic_batch_comment(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    if text == SKIP_TEXT:
+        comment: Optional[str] = None
+    else:
+        comment = text or None
+    data = await state.get_data()
+    quantity = data.get("batch_quantity")
+    material = data.get("batch_material")
+    thickness: Optional[Decimal] = data.get("batch_thickness")
+    color = data.get("batch_color")
+    length = data.get("batch_length")
+    width = data.get("batch_width")
+    storage = data.get("batch_storage")
+    last_article = data.get("batch_last_article")
+    if not all([quantity, material, thickness, color, length, width, storage]):
+        await _cancel_add_plastic_batch_flow(message, state)
+        return
+    if not isinstance(quantity, int):
+        try:
+            quantity = int(quantity)
+        except (TypeError, ValueError):
+            await _cancel_add_plastic_batch_flow(message, state)
+            return
+    start_article = 1 if last_article is None else int(last_article) + 1
+    articles = [str(start_article + idx) for idx in range(quantity)]
+    employee_id = message.from_user.id if message.from_user else None
+    employee_name = message.from_user.full_name if message.from_user else None
+    records: list[Dict[str, Any]] = []
+    for article in articles:
+        record = await insert_warehouse_plastic_record(
+            article=article,
+            material=material,
+            thickness=thickness,
+            color=color,
+            length_mm=Decimal(length),
+            width_mm=Decimal(width),
+            warehouse=storage,
+            comment=comment,
+            employee_id=employee_id,
+            employee_name=employee_name,
+        )
+        if not record:
+            await state.clear()
+            await message.answer(
+                "⚠️ Не удалось добавить пластик. Попробуйте позже.",
+                reply_markup=WAREHOUSE_PLASTICS_KB,
+            )
+            return
+        records.append(record)
+    await state.clear()
+    summary_comment = (records[0].get("comment") if records else comment) or "—"
+    if records and records[0].get("employee_name"):
+        summary_employee = records[0].get("employee_name") or "—"
+    else:
+        summary_employee = employee_name or "—"
+    arrival_at = records[0].get("arrival_at") if records else None
+    if arrival_at:
+        try:
+            arrival_local = arrival_at.astimezone(WARSAW_TZ)
+        except Exception:
+            arrival_local = arrival_at
+        arrival_formatted = arrival_local.strftime("%Y-%m-%d %H:%M")
+    else:
+        arrival_formatted = datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M")
+    articles_text = ", ".join(articles)
+    await message.answer(
+        "✅ Пачка пластика добавлена на склад.\n\n"
+        f"Количество: {quantity}\n"
+        f"Артикулы: {articles_text}\n"
         f"Материал: {material}\n"
         f"Толщина: {format_thickness_value(thickness)}\n"
         f"Цвет: {color}\n"
