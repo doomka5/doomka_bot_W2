@@ -232,6 +232,15 @@ async def init_database() -> None:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS film_manufacturers (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
             # Добавляем администратора
             await conn.execute(
                 """
@@ -296,6 +305,11 @@ class ManagePlasticMaterialStates(StatesGroup):
     waiting_for_color_value_to_delete = State()
     waiting_for_new_storage_location_name = State()
     waiting_for_storage_location_to_delete = State()
+
+
+class ManageFilmManufacturerStates(StatesGroup):
+    waiting_for_new_manufacturer_name = State()
+    waiting_for_manufacturer_name_to_delete = State()
 
 
 class AddWarehousePlasticStates(StatesGroup):
@@ -404,6 +418,14 @@ WAREHOUSE_SETTINGS_PLASTIC_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+WAREHOUSE_SETTINGS_FILM_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🏭 Производитель")],
+        [KeyboardButton(text="⬅️ Назад к складу")],
+    ],
+    resize_keyboard=True,
+)
+
 WAREHOUSE_SETTINGS_PLASTIC_MATERIALS_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить материал")],
@@ -436,6 +458,15 @@ WAREHOUSE_SETTINGS_PLASTIC_STORAGE_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="➕ Добавить место хранения")],
         [KeyboardButton(text="➖ Удалить место хранения")],
         [KeyboardButton(text="⬅️ Назад к пластику")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_FILM_MANUFACTURERS_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить производителя")],
+        [KeyboardButton(text="➖ Удалить производителя")],
+        [KeyboardButton(text="⬅️ Назад к пленкам")],
     ],
     resize_keyboard=True,
 )
@@ -605,6 +636,16 @@ async def fetch_plastic_storage_locations() -> list[str]:
     return [row["name"] for row in rows]
 
 
+async def fetch_film_manufacturers() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM film_manufacturers ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
 async def fetch_max_plastic_article() -> Optional[int]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -678,6 +719,33 @@ async def delete_plastic_storage_location(name: str) -> bool:
     async with db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM plastic_storage_locations WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_film_manufacturer(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO film_manufacturers (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_film_manufacturer(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM film_manufacturers WHERE LOWER(name) = LOWER($1)",
             name,
         )
     return result.endswith(" 1")
@@ -1574,6 +1642,14 @@ def build_materials_keyboard(materials: list[str]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_manufacturers_keyboard(manufacturers: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for name in manufacturers:
+        rows.append([KeyboardButton(text=name)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 def build_thickness_keyboard(thicknesses: list[Decimal]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for value in thicknesses:
@@ -1671,6 +1747,30 @@ async def send_storage_locations_overview(message: Message) -> None:
         f"{formatted}\n\n"
         "Используйте кнопки ниже, чтобы добавить или удалить место.",
         reply_markup=WAREHOUSE_SETTINGS_PLASTIC_STORAGE_KB,
+    )
+
+
+async def send_film_settings_overview(message: Message) -> None:
+    manufacturers = await fetch_film_manufacturers()
+    formatted = format_materials_list(manufacturers)
+    text = (
+        "⚙️ Настройки склада → Пленки.\n\n"
+        "Доступные производители:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопку «🏭 Производитель», чтобы управлять списком."
+    )
+    await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_FILM_KB)
+
+
+async def send_film_manufacturers_menu(message: Message) -> None:
+    manufacturers = await fetch_film_manufacturers()
+    formatted = format_materials_list(manufacturers)
+    await message.answer(
+        "⚙️ Настройки склада → Пленки → Производитель.\n\n"
+        "Доступные производители:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить производителя.",
+        reply_markup=WAREHOUSE_SETTINGS_FILM_MANUFACTURERS_KB,
     )
 
 
@@ -3197,13 +3297,96 @@ async def process_plastic_batch_comment(message: Message, state: FSMContext) -> 
 
 
 @dp.message(F.text == "🎞️ Пленки ⚙️")
-async def handle_warehouse_settings_films(message: Message) -> None:
-    if not await ensure_admin_access(message):
+async def handle_warehouse_settings_films(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
         return
-    await message.answer(
-        "🎞️ Настройки для пленок находятся в разработке.",
-        reply_markup=WAREHOUSE_SETTINGS_MENU_KB,
+    await state.clear()
+    await send_film_settings_overview(message)
+
+
+@dp.message(F.text == "🏭 Производитель")
+async def handle_film_manufacturers_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_film_manufacturers_menu(message)
+
+
+@dp.message(F.text == "⬅️ Назад к пленкам")
+async def handle_back_to_film_settings(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_film_settings_overview(message)
+
+
+@dp.message(F.text == "➕ Добавить производителя")
+async def handle_add_film_manufacturer_button(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(
+        ManageFilmManufacturerStates.waiting_for_new_manufacturer_name
     )
+    manufacturers = await fetch_film_manufacturers()
+    existing_text = format_materials_list(manufacturers)
+    await message.answer(
+        "Введите название производителя.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageFilmManufacturerStates.waiting_for_new_manufacturer_name)
+async def process_new_film_manufacturer(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_film_manufacturer(name):
+        await message.answer(f"✅ Производитель «{name}» добавлен.")
+    else:
+        await message.answer(f"ℹ️ Производитель «{name}» уже есть в списке.")
+    await state.clear()
+    await send_film_settings_overview(message)
+
+
+@dp.message(F.text == "➖ Удалить производителя")
+async def handle_remove_film_manufacturer_button(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    manufacturers = await fetch_film_manufacturers()
+    if not manufacturers:
+        await message.answer(
+            "Список производителей пуст. Добавьте производителей перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_FILM_MANUFACTURERS_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManageFilmManufacturerStates.waiting_for_manufacturer_name_to_delete
+    )
+    await message.answer(
+        "Выберите производителя, которого нужно удалить:",
+        reply_markup=build_manufacturers_keyboard(manufacturers),
+    )
+
+
+@dp.message(ManageFilmManufacturerStates.waiting_for_manufacturer_name_to_delete)
+async def process_remove_film_manufacturer(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_film_manufacturer(name):
+        await message.answer(f"🗑 Производитель «{name}» удалён.")
+    else:
+        await message.answer(f"ℹ️ Производитель «{name}» не найден в списке.")
+    await state.clear()
+    await send_film_settings_overview(message)
 
 
 @dp.message(F.text == "🧱 Пластик")
@@ -3804,6 +3987,12 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     current_state = await state.get_state()
     if current_state and current_state.startswith(AddUserStates.__name__):
         await _cancel_add_user_flow(message, state)
+        return
+    if current_state and current_state.startswith(
+        ManageFilmManufacturerStates.__name__
+    ):
+        await state.clear()
+        await send_film_settings_overview(message)
         return
     await state.clear()
     await send_plastic_settings_overview(message)

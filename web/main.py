@@ -100,6 +100,15 @@ async def startup():
     )
     await conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS film_manufacturers (
+            id SERIAL PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
+    await conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS warehouse_films (
             id SERIAL PRIMARY KEY,
             article TEXT NOT NULL,
