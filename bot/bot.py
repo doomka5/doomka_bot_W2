@@ -241,6 +241,17 @@ async def init_database() -> None:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS film_series (
+                    id SERIAL PRIMARY KEY,
+                    manufacturer_id INTEGER NOT NULL REFERENCES film_manufacturers(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now()),
+                    UNIQUE(manufacturer_id, name)
+                )
+                """
+            )
             # Добавляем администратора
             await conn.execute(
                 """
@@ -310,6 +321,13 @@ class ManagePlasticMaterialStates(StatesGroup):
 class ManageFilmManufacturerStates(StatesGroup):
     waiting_for_new_manufacturer_name = State()
     waiting_for_manufacturer_name_to_delete = State()
+
+
+class ManageFilmSeriesStates(StatesGroup):
+    waiting_for_manufacturer_for_new_series = State()
+    waiting_for_new_series_name = State()
+    waiting_for_manufacturer_for_series_deletion = State()
+    waiting_for_series_name_to_delete = State()
 
 
 class AddWarehousePlasticStates(StatesGroup):
@@ -421,6 +439,7 @@ WAREHOUSE_SETTINGS_PLASTIC_KB = ReplyKeyboardMarkup(
 WAREHOUSE_SETTINGS_FILM_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🏭 Производитель")],
+        [KeyboardButton(text="🎬 Серия")],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -466,6 +485,15 @@ WAREHOUSE_SETTINGS_FILM_MANUFACTURERS_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить производителя")],
         [KeyboardButton(text="➖ Удалить производителя")],
+        [KeyboardButton(text="⬅️ Назад к пленкам")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_FILM_SERIES_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить серию")],
+        [KeyboardButton(text="➖ Удалить серию")],
         [KeyboardButton(text="⬅️ Назад к пленкам")],
     ],
     resize_keyboard=True,
@@ -646,6 +674,69 @@ async def fetch_film_manufacturers() -> list[str]:
     return [row["name"] for row in rows]
 
 
+async def get_film_manufacturer_by_name(
+    name: str,
+) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name FROM film_manufacturers WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "name": row["name"]}
+
+
+async def fetch_film_manufacturers_with_series() -> list[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        manufacturers_rows = await conn.fetch(
+            "SELECT id, name FROM film_manufacturers ORDER BY LOWER(name)"
+        )
+        series_rows = await conn.fetch(
+            """
+            SELECT manufacturer_id, name
+            FROM film_series
+            ORDER BY manufacturer_id, LOWER(name)
+            """
+        )
+    series_map: dict[int, list[str]] = {}
+    for row in series_rows:
+        series_map.setdefault(row["manufacturer_id"], []).append(row["name"])
+    result: list[dict[str, Any]] = []
+    for row in manufacturers_rows:
+        result.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "series": series_map.get(row["id"], []),
+            }
+        )
+    return result
+
+
+async def fetch_film_series_by_manufacturer(manufacturer_name: str) -> list[str]:
+    manufacturer = await get_film_manufacturer_by_name(manufacturer_name)
+    if manufacturer is None:
+        return []
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT name
+            FROM film_series
+            WHERE manufacturer_id = $1
+            ORDER BY LOWER(name)
+            """,
+            manufacturer["id"],
+        )
+    return [row["name"] for row in rows]
+
+
 async def fetch_max_plastic_article() -> Optional[int]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -749,6 +840,64 @@ async def delete_film_manufacturer(name: str) -> bool:
             name,
         )
     return result.endswith(" 1")
+
+
+async def insert_film_series(
+    manufacturer_name: str, series_name: str
+) -> str:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        manufacturer_row = await conn.fetchrow(
+            "SELECT id, name FROM film_manufacturers WHERE LOWER(name) = LOWER($1)",
+            manufacturer_name,
+        )
+        if manufacturer_row is None:
+            return "manufacturer_not_found"
+        manufacturer_id = manufacturer_row["id"]
+        existing_id = await conn.fetchval(
+            """
+            SELECT id FROM film_series
+            WHERE manufacturer_id = $1 AND LOWER(name) = LOWER($2)
+            """,
+            manufacturer_id,
+            series_name,
+        )
+        if existing_id:
+            return "already_exists"
+        row = await conn.fetchrow(
+            """
+            INSERT INTO film_series (manufacturer_id, name)
+            VALUES ($1, $2)
+            RETURNING id
+            """,
+            manufacturer_id,
+            series_name,
+        )
+    return "inserted" if row else "error"
+
+
+async def delete_film_series(
+    manufacturer_name: str, series_name: str
+) -> str:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        manufacturer_row = await conn.fetchrow(
+            "SELECT id FROM film_manufacturers WHERE LOWER(name) = LOWER($1)",
+            manufacturer_name,
+        )
+        if manufacturer_row is None:
+            return "manufacturer_not_found"
+        result = await conn.execute(
+            """
+            DELETE FROM film_series
+            WHERE manufacturer_id = $1 AND LOWER(name) = LOWER($2)
+            """,
+            manufacturer_row["id"],
+            series_name,
+        )
+    return "deleted" if result.endswith(" 1") else "not_found"
 
 
 async def fetch_materials_with_thicknesses() -> list[dict[str, Any]]:
@@ -1467,6 +1616,12 @@ def format_colors_list(colors: list[str]) -> str:
     return ", ".join(colors)
 
 
+def format_series_list(series: list[str]) -> str:
+    if not series:
+        return "—"
+    return ", ".join(series)
+
+
 def format_storage_locations_list(locations: list[str]) -> str:
     if not locations:
         return "—"
@@ -1650,6 +1805,14 @@ def build_manufacturers_keyboard(manufacturers: list[str]) -> ReplyKeyboardMarku
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_series_keyboard(series: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for name in series:
+        rows.append([KeyboardButton(text=name)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 def build_thickness_keyboard(thicknesses: list[Decimal]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for value in thicknesses:
@@ -1751,13 +1914,34 @@ async def send_storage_locations_overview(message: Message) -> None:
 
 
 async def send_film_settings_overview(message: Message) -> None:
-    manufacturers = await fetch_film_manufacturers()
-    formatted = format_materials_list(manufacturers)
+    manufacturers = await fetch_film_manufacturers_with_series()
+    if manufacturers:
+        lines = []
+        for manufacturer in manufacturers:
+            name = manufacturer["name"]
+            series = manufacturer.get("series") or []
+            formatted_series = format_series_list(series)
+            lines.append(
+                "\n".join(
+                    [
+                        f"• {name}",
+                        f"   Серии: {formatted_series}",
+                    ]
+                )
+            )
+        formatted = "\n".join(lines)
+        intro = "Доступные производители и серии:"
+    else:
+        formatted = (
+            "Производители ещё не добавлены. Добавьте производителей,"
+            " а затем укажите для них серии."
+        )
+        intro = "Список производителей пуст."
     text = (
         "⚙️ Настройки склада → Пленки.\n\n"
-        "Доступные производители:\n"
+        f"{intro}\n"
         f"{formatted}\n\n"
-        "Используйте кнопку «🏭 Производитель», чтобы управлять списком."
+        "Используйте кнопки «🏭 Производитель» и «🎬 Серия», чтобы управлять списками."
     )
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_FILM_KB)
 
@@ -3312,6 +3496,40 @@ async def handle_film_manufacturers_menu(message: Message, state: FSMContext) ->
     await send_film_manufacturers_menu(message)
 
 
+@dp.message(F.text == "🎬 Серия")
+async def handle_film_series_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    manufacturers = await fetch_film_manufacturers_with_series()
+    if manufacturers:
+        lines = []
+        for manufacturer in manufacturers:
+            name = manufacturer["name"]
+            formatted_series = format_series_list(manufacturer.get("series") or [])
+            lines.append(
+                "\n".join(
+                    [
+                        f"• {name}",
+                        f"   Серии: {formatted_series}",
+                    ]
+                )
+            )
+        formatted = "\n".join(lines)
+        text = (
+            "⚙️ Настройки склада → Пленки → Серия.\n\n"
+            "Доступные серии по производителям:\n"
+            f"{formatted}\n\n"
+            "Используйте кнопки ниже, чтобы добавить или удалить серию."
+        )
+    else:
+        text = (
+            "⚙️ Настройки склада → Пленки → Серия.\n\n"
+            "Сначала добавьте производителей, чтобы создавать серии."
+        )
+    await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_FILM_SERIES_KB)
+
+
 @dp.message(F.text == "⬅️ Назад к пленкам")
 async def handle_back_to_film_settings(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
@@ -3385,6 +3603,208 @@ async def process_remove_film_manufacturer(message: Message, state: FSMContext) 
         await message.answer(f"🗑 Производитель «{name}» удалён.")
     else:
         await message.answer(f"ℹ️ Производитель «{name}» не найден в списке.")
+    await state.clear()
+    await send_film_settings_overview(message)
+
+
+@dp.message(F.text == "➕ Добавить серию")
+async def handle_add_film_series_button(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    manufacturers = await fetch_film_manufacturers()
+    if not manufacturers:
+        await message.answer(
+            "Сначала добавьте производителей, чтобы указать их серии.",
+            reply_markup=WAREHOUSE_SETTINGS_FILM_SERIES_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManageFilmSeriesStates.waiting_for_manufacturer_for_new_series
+    )
+    await message.answer(
+        "Выберите производителя, для которого нужно добавить серию:",
+        reply_markup=build_manufacturers_keyboard(manufacturers),
+    )
+
+
+@dp.message(ManageFilmSeriesStates.waiting_for_manufacturer_for_new_series)
+async def process_choose_manufacturer_for_new_series(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    manufacturer_name = (message.text or "").strip()
+    manufacturer = await get_film_manufacturer_by_name(manufacturer_name)
+    if manufacturer is None:
+        manufacturers = await fetch_film_manufacturers()
+        if not manufacturers:
+            await state.clear()
+            await message.answer(
+                "Список производителей пуст. Добавьте производителей, чтобы продолжить.",
+                reply_markup=WAREHOUSE_SETTINGS_FILM_SERIES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Производитель не найден. Выберите вариант из списка.",
+            reply_markup=build_manufacturers_keyboard(manufacturers),
+        )
+        return
+    await state.update_data(selected_manufacturer=manufacturer["name"])
+    await state.set_state(ManageFilmSeriesStates.waiting_for_new_series_name)
+    existing_series = await fetch_film_series_by_manufacturer(manufacturer["name"])
+    formatted_series = format_series_list(existing_series)
+    await message.answer(
+        "Введите название новой серии.\n\n"
+        f"Текущие серии у «{manufacturer['name']}»: {formatted_series}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageFilmSeriesStates.waiting_for_new_series_name)
+async def process_new_series_name(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    series_name = (message.text or "").strip()
+    if not series_name:
+        await message.answer("⚠️ Название серии не может быть пустым. Попробуйте снова.")
+        return
+    data = await state.get_data()
+    manufacturer_name = data.get("selected_manufacturer")
+    if not manufacturer_name:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось определить производителя. Попробуйте снова.",
+            reply_markup=WAREHOUSE_SETTINGS_FILM_SERIES_KB,
+        )
+        await send_film_settings_overview(message)
+        return
+    status = await insert_film_series(manufacturer_name, series_name)
+    if status == "manufacturer_not_found":
+        await message.answer(
+            "ℹ️ Производитель больше не существует. Обновите список и попробуйте снова."
+        )
+    elif status == "already_exists":
+        await message.answer(
+            f"ℹ️ Серия «{series_name}» уже указана для «{manufacturer_name}»."
+        )
+    elif status == "inserted":
+        await message.answer(
+            f"✅ Серия «{series_name}» добавлена для «{manufacturer_name}»."
+        )
+    else:
+        await message.answer(
+            "⚠️ Не удалось добавить серию. Попробуйте позже."
+        )
+    await state.clear()
+    await send_film_settings_overview(message)
+
+
+@dp.message(F.text == "➖ Удалить серию")
+async def handle_remove_film_series_button(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    manufacturers = await fetch_film_manufacturers_with_series()
+    manufacturers_with_series = [
+        item["name"] for item in manufacturers if item.get("series")
+    ]
+    if not manufacturers_with_series:
+        await message.answer(
+            "Для удаления пока нет добавленных серий.",
+            reply_markup=WAREHOUSE_SETTINGS_FILM_SERIES_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManageFilmSeriesStates.waiting_for_manufacturer_for_series_deletion
+    )
+    await message.answer(
+        "Выберите производителя, у которого нужно удалить серию:",
+        reply_markup=build_manufacturers_keyboard(manufacturers_with_series),
+    )
+
+
+@dp.message(ManageFilmSeriesStates.waiting_for_manufacturer_for_series_deletion)
+async def process_choose_manufacturer_for_series_deletion(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    manufacturer_name = (message.text or "").strip()
+    manufacturer = await get_film_manufacturer_by_name(manufacturer_name)
+    if manufacturer is None:
+        manufacturers = await fetch_film_manufacturers_with_series()
+        manufacturers_with_series = [
+            item["name"] for item in manufacturers if item.get("series")
+        ]
+        if not manufacturers_with_series:
+            await state.clear()
+            await message.answer(
+                "Список серий пуст. Добавьте серии, чтобы их удалить.",
+                reply_markup=WAREHOUSE_SETTINGS_FILM_SERIES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Производитель не найден. Выберите из списка.",
+            reply_markup=build_manufacturers_keyboard(manufacturers_with_series),
+        )
+        return
+    series = await fetch_film_series_by_manufacturer(manufacturer["name"])
+    if not series:
+        manufacturers = await fetch_film_manufacturers_with_series()
+        manufacturers_with_series = [
+            item["name"] for item in manufacturers if item.get("series")
+        ]
+        if not manufacturers_with_series:
+            await state.clear()
+            await message.answer(
+                "Список серий пуст. Добавьте серии, чтобы их удалить.",
+                reply_markup=WAREHOUSE_SETTINGS_FILM_SERIES_KB,
+            )
+            return
+        await message.answer(
+            "ℹ️ У выбранного производителя нет серий. Выберите другого производителя.",
+            reply_markup=build_manufacturers_keyboard(manufacturers_with_series),
+        )
+        return
+    await state.update_data(selected_manufacturer=manufacturer["name"])
+    await state.set_state(ManageFilmSeriesStates.waiting_for_series_name_to_delete)
+    await message.answer(
+        f"Выберите серию для удаления у «{manufacturer['name']}»:",
+        reply_markup=build_series_keyboard(series),
+    )
+
+
+@dp.message(ManageFilmSeriesStates.waiting_for_series_name_to_delete)
+async def process_remove_film_series(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    series_name = (message.text or "").strip()
+    if not series_name:
+        await message.answer("⚠️ Название серии не может быть пустым. Попробуйте снова.")
+        return
+    data = await state.get_data()
+    manufacturer_name = data.get("selected_manufacturer")
+    if not manufacturer_name:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось определить производителя. Попробуйте снова."
+        )
+        await send_film_settings_overview(message)
+        return
+    status = await delete_film_series(manufacturer_name, series_name)
+    if status == "manufacturer_not_found":
+        await message.answer(
+            "ℹ️ Производитель больше не существует. Обновите список и попробуйте снова."
+        )
+    elif status == "deleted":
+        await message.answer(
+            f"🗑 Серия «{series_name}» удалена у «{manufacturer_name}»."
+        )
+    else:
+        await message.answer(
+            f"ℹ️ Серия «{series_name}» не найдена у «{manufacturer_name}»."
+        )
     await state.clear()
     await send_film_settings_overview(message)
 
@@ -3990,6 +4410,12 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
         return
     if current_state and current_state.startswith(
         ManageFilmManufacturerStates.__name__
+    ):
+        await state.clear()
+        await send_film_settings_overview(message)
+        return
+    if current_state and current_state.startswith(
+        ManageFilmSeriesStates.__name__
     ):
         await state.clear()
         await send_film_settings_overview(message)
