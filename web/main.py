@@ -98,6 +98,25 @@ async def startup():
         )
         """
     )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS warehouse_films (
+            id SERIAL PRIMARY KEY,
+            article TEXT NOT NULL,
+            manufacturer TEXT,
+            series TEXT,
+            color_code TEXT,
+            color TEXT,
+            width NUMERIC(10, 2),
+            length NUMERIC(10, 2),
+            warehouse TEXT,
+            comment TEXT,
+            employee_id BIGINT,
+            employee_nick TEXT,
+            recorded_at TIMESTAMPTZ
+        )
+        """
+    )
     await conn.close()
 
 
