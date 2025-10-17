@@ -261,6 +261,25 @@ async def init_database() -> None:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS warehouse_films (
+                    id SERIAL PRIMARY KEY,
+                    article TEXT NOT NULL,
+                    manufacturer TEXT,
+                    series TEXT,
+                    color_code TEXT,
+                    color TEXT,
+                    width NUMERIC(10, 2),
+                    length NUMERIC(10, 2),
+                    warehouse TEXT,
+                    comment TEXT,
+                    employee_id BIGINT,
+                    employee_nick TEXT,
+                    recorded_at TIMESTAMPTZ
+                )
+                """
+            )
             # Добавляем администратора
             await conn.execute(
                 """
@@ -342,6 +361,18 @@ class ManageFilmSeriesStates(StatesGroup):
 class ManageFilmStorageStates(StatesGroup):
     waiting_for_new_storage_location_name = State()
     waiting_for_storage_location_to_delete = State()
+
+
+class AddWarehouseFilmStates(StatesGroup):
+    waiting_for_article = State()
+    waiting_for_manufacturer = State()
+    waiting_for_series = State()
+    waiting_for_color_code = State()
+    waiting_for_color = State()
+    waiting_for_width = State()
+    waiting_for_length = State()
+    waiting_for_storage = State()
+    waiting_for_comment = State()
 
 
 class AddWarehousePlasticStates(StatesGroup):
@@ -648,6 +679,13 @@ async def _cancel_write_off_plastic_flow(message: Message, state: FSMContext) ->
     await message.answer("❌ Списание отменено.", reply_markup=WAREHOUSE_PLASTICS_KB)
 
 
+async def _cancel_add_film_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Добавление пленки отменено.", reply_markup=WAREHOUSE_FILMS_KB
+    )
+
+
 # === Работа с БД ===
 async def upsert_user_in_db(
     tg_id: int,
@@ -805,6 +843,25 @@ async def fetch_max_plastic_article() -> Optional[int]:
             """
             SELECT MAX(article::BIGINT)
             FROM warehouse_plastics
+            WHERE article ~ '^[0-9]+$'
+            """
+        )
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def fetch_max_film_article() -> Optional[int]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        value = await conn.fetchval(
+            """
+            SELECT MAX(article::BIGINT)
+            FROM warehouse_films
             WHERE article ~ '^[0-9]+$'
             """
         )
@@ -1247,6 +1304,73 @@ async def insert_warehouse_plastic_record(
             employee_name,
             now_warsaw.date(),
             now_warsaw,
+        )
+    if row is None:
+        return {}
+    return dict(row)
+
+
+async def insert_warehouse_film_record(
+    article: str,
+    manufacturer: str,
+    series: str,
+    color_code: str,
+    color: str,
+    width_mm: Decimal,
+    length_mm: Decimal,
+    warehouse: str,
+    comment: Optional[str],
+    employee_id: Optional[int],
+    employee_nick: Optional[str],
+) -> Dict[str, Any]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    recorded_at = datetime.now(WARSAW_TZ)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO warehouse_films (
+                article,
+                manufacturer,
+                series,
+                color_code,
+                color,
+                width,
+                length,
+                warehouse,
+                comment,
+                employee_id,
+                employee_nick,
+                recorded_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            RETURNING
+                id,
+                article,
+                manufacturer,
+                series,
+                color_code,
+                color,
+                width,
+                length,
+                warehouse,
+                comment,
+                employee_id,
+                employee_nick,
+                recorded_at
+            """,
+            article,
+            manufacturer,
+            series,
+            color_code,
+            color,
+            width_mm,
+            length_mm,
+            warehouse,
+            comment,
+            employee_id,
+            employee_nick,
+            recorded_at,
         )
     if row is None:
         return {}
@@ -1802,6 +1926,32 @@ def format_plastic_record_for_message(record: Dict[str, Any]) -> str:
     )
 
 
+def format_film_record_for_message(record: Dict[str, Any]) -> str:
+    recorded_at = record.get("recorded_at")
+    if recorded_at:
+        try:
+            recorded_local = recorded_at.astimezone(WARSAW_TZ)
+        except Exception:
+            recorded_local = recorded_at
+        recorded_text = recorded_local.strftime("%Y-%m-%d %H:%M")
+    else:
+        recorded_text = "—"
+    return (
+        f"Артикул: {record.get('article') or '—'}\n"
+        f"Производитель: {record.get('manufacturer') or '—'}\n"
+        f"Серия: {record.get('series') or '—'}\n"
+        f"Код цвета: {record.get('color_code') or '—'}\n"
+        f"Цвет: {record.get('color') or '—'}\n"
+        f"Ширина: {format_dimension_value(record.get('width'))}\n"
+        f"Длина: {format_dimension_value(record.get('length'))}\n"
+        f"Склад: {record.get('warehouse') or '—'}\n"
+        f"Комментарий: {record.get('comment') or '—'}\n"
+        f"Ник: {record.get('employee_nick') or '—'}\n"
+        f"ID: {record.get('employee_id') or '—'}\n"
+        f"Дата и время: {recorded_text}"
+    )
+
+
 def format_written_off_plastic_record(record: Dict[str, Any]) -> str:
     base_info = format_plastic_record_for_message(record)
     project = record.get("project") or "—"
@@ -1865,6 +2015,26 @@ def parse_dimension_filter_value(raw_text: str) -> Optional[Decimal]:
     except (InvalidOperation, ValueError):
         return None
     if value < 0:
+        return None
+    return value.quantize(Decimal("0.01"))
+
+
+def parse_positive_decimal(raw_text: str) -> Optional[Decimal]:
+    if raw_text is None:
+        return None
+    cleaned = raw_text.strip().lower()
+    for suffix in ("мм", "mm"):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)]
+            break
+    cleaned = cleaned.replace(" ", "").replace(",", ".")
+    if not cleaned:
+        return None
+    try:
+        value = Decimal(cleaned)
+    except (InvalidOperation, ValueError):
+        return None
+    if value <= 0:
         return None
     return value.quantize(Decimal("0.01"))
 
@@ -2367,7 +2537,30 @@ async def _reply_films_feature_in_development(message: Message, feature: str) ->
 @dp.message(F.text == WAREHOUSE_FILMS_ADD_TEXT)
 async def handle_add_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await _reply_films_feature_in_development(message, "Добавление пленки")
+    manufacturers = await fetch_film_manufacturers()
+    if not manufacturers:
+        await message.answer(
+            "ℹ️ Справочник производителей пуст. Добавьте данные в настройках.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    await state.set_state(AddWarehouseFilmStates.waiting_for_article)
+    suggested_article: Optional[str] = None
+    last_article = await fetch_max_film_article()
+    if last_article is not None:
+        suggested_article = str(last_article + 1)
+    await state.update_data(article_suggestion=suggested_article)
+    prompt_lines = ["Введите артикул пленки (только цифры)."]
+    if last_article is not None and suggested_article is not None:
+        prompt_lines.append("")
+        prompt_lines.append(
+            "Последний добавленный артикул: "
+            f"{last_article}. Нажмите кнопку ниже, чтобы использовать следующий номер."
+        )
+    await message.answer(
+        "\n".join(prompt_lines),
+        reply_markup=build_article_input_keyboard(suggested_article),
+    )
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_WRITE_OFF_TEXT)
@@ -2398,6 +2591,252 @@ async def handle_search_warehouse_film(message: Message, state: FSMContext) -> N
 async def handle_export_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
     await _reply_films_feature_in_development(message, "Экспорт пленок")
+
+
+@dp.message(AddWarehouseFilmStates.waiting_for_article)
+async def process_film_article(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_film_flow(message, state)
+        return
+    article = (message.text or "").strip()
+    if not article.isdigit():
+        data = await state.get_data()
+        suggestion = data.get("article_suggestion")
+        await message.answer(
+            "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
+            reply_markup=build_article_input_keyboard(suggestion),
+        )
+        return
+    manufacturers = await fetch_film_manufacturers()
+    if not manufacturers:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник производителей пуст. Добавьте данные в настройках.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    await state.update_data(article=article, article_suggestion=None)
+    await state.set_state(AddWarehouseFilmStates.waiting_for_manufacturer)
+    await message.answer(
+        "Выберите производителя:",
+        reply_markup=build_manufacturers_keyboard(manufacturers),
+    )
+
+
+@dp.message(AddWarehouseFilmStates.waiting_for_manufacturer)
+async def process_film_manufacturer(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_film_flow(message, state)
+        return
+    manufacturers = await fetch_film_manufacturers()
+    raw = (message.text or "").strip()
+    match = next((item for item in manufacturers if item.lower() == raw.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Производитель не найден. Выберите из списка.",
+            reply_markup=build_manufacturers_keyboard(manufacturers),
+        )
+        return
+    series_list = await fetch_film_series_by_manufacturer(match)
+    if not series_list:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Для выбранного производителя не указаны серии. Добавьте их в настройках.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    await state.update_data(manufacturer=match)
+    await state.set_state(AddWarehouseFilmStates.waiting_for_series)
+    await message.answer(
+        "Выберите серию:",
+        reply_markup=build_series_keyboard(series_list),
+    )
+
+
+@dp.message(AddWarehouseFilmStates.waiting_for_series)
+async def process_film_series(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_film_flow(message, state)
+        return
+    data = await state.get_data()
+    manufacturer = data.get("manufacturer")
+    if not manufacturer:
+        await _cancel_add_film_flow(message, state)
+        return
+    series_list = await fetch_film_series_by_manufacturer(manufacturer)
+    raw = (message.text or "").strip()
+    match = next((item for item in series_list if item.lower() == raw.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Серия не найдена. Выберите из списка.",
+            reply_markup=build_series_keyboard(series_list),
+        )
+        return
+    await state.update_data(series=match)
+    await state.set_state(AddWarehouseFilmStates.waiting_for_color_code)
+    await message.answer(
+        "Введите код цвета (например, 3-45).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehouseFilmStates.waiting_for_color_code)
+async def process_film_color_code(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_film_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Код цвета не может быть пустым. Укажите значение.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(color_code=text)
+    await state.set_state(AddWarehouseFilmStates.waiting_for_color)
+    await message.answer(
+        "Укажите цвет (например, Белый).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehouseFilmStates.waiting_for_color)
+async def process_film_color(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_film_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Цвет не может быть пустым. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(color=text)
+    await state.set_state(AddWarehouseFilmStates.waiting_for_width)
+    await message.answer(
+        "Укажите ширину пленки в миллиметрах (можно через точку или запятую).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehouseFilmStates.waiting_for_width)
+async def process_film_width(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_film_flow(message, state)
+        return
+    value = parse_positive_decimal(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Ширина должна быть положительным числом. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(width=value)
+    await state.set_state(AddWarehouseFilmStates.waiting_for_length)
+    await message.answer(
+        "Укажите длину пленки в миллиметрах (можно через точку или запятую).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehouseFilmStates.waiting_for_length)
+async def process_film_length(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_film_flow(message, state)
+        return
+    value = parse_positive_decimal(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Длина должна быть положительным числом. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    locations = await fetch_film_storage_locations()
+    if not locations:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник мест хранения пуст. Добавьте места в настройках.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    await state.update_data(length=value)
+    await state.set_state(AddWarehouseFilmStates.waiting_for_storage)
+    await message.answer(
+        "Выберите место хранения:",
+        reply_markup=build_storage_locations_keyboard(locations),
+    )
+
+
+@dp.message(AddWarehouseFilmStates.waiting_for_storage)
+async def process_film_storage(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_add_film_flow(message, state)
+        return
+    locations = await fetch_film_storage_locations()
+    raw = (message.text or "").strip()
+    match = next((item for item in locations if item.lower() == raw.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Место хранения не найдено. Выберите из списка.",
+            reply_markup=build_storage_locations_keyboard(locations),
+        )
+        return
+    await state.update_data(storage=match)
+    await state.set_state(AddWarehouseFilmStates.waiting_for_comment)
+    await message.answer(
+        "Добавьте комментарий (необязательно) или нажмите «Пропустить».",
+        reply_markup=SKIP_OR_CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehouseFilmStates.waiting_for_comment)
+async def process_film_comment(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_film_flow(message, state)
+        return
+    comment: Optional[str]
+    if text == SKIP_TEXT:
+        comment = None
+    else:
+        comment = text or None
+    data = await state.get_data()
+    article = data.get("article")
+    manufacturer = data.get("manufacturer")
+    series = data.get("series")
+    color_code = data.get("color_code")
+    color = data.get("color")
+    width: Optional[Decimal] = data.get("width")
+    length: Optional[Decimal] = data.get("length")
+    storage = data.get("storage")
+    if not all([article, manufacturer, series, color_code, color, width, length, storage]):
+        await _cancel_add_film_flow(message, state)
+        return
+    employee_id = message.from_user.id if message.from_user else None
+    employee_nick: Optional[str] = None
+    if message.from_user:
+        employee_nick = message.from_user.username or message.from_user.full_name
+    record = await insert_warehouse_film_record(
+        article=article,
+        manufacturer=manufacturer,
+        series=series,
+        color_code=color_code,
+        color=color,
+        width_mm=width,
+        length_mm=length,
+        warehouse=storage,
+        comment=comment,
+        employee_id=employee_id,
+        employee_nick=employee_nick,
+    )
+    await state.clear()
+    formatted = format_film_record_for_message(record)
+    await message.answer(
+        "✅ Пленка добавлена на склад.\n\n"
+        f"{formatted}",
+        reply_markup=WAREHOUSE_FILMS_KB,
+    )
 
 
 @dp.message(F.text == "📤 Экспорт")
