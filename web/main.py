@@ -109,6 +109,17 @@ async def startup():
     )
     await conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS film_series (
+            id SERIAL PRIMARY KEY,
+            manufacturer_id INTEGER NOT NULL REFERENCES film_manufacturers(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now()),
+            UNIQUE(manufacturer_id, name)
+        )
+        """
+    )
+    await conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS warehouse_films (
             id SERIAL PRIMARY KEY,
             article TEXT NOT NULL,
