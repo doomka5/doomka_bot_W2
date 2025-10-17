@@ -377,6 +377,7 @@ USERS_MENU_KB = ReplyKeyboardMarkup(
 WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧱 Пластики")],
+        [KeyboardButton(text="🎞️ Пленки")],
         [KeyboardButton(text="⚙️ Настройки склада")],
         [KeyboardButton(text="⬅️ Главное меню")],
     ],
@@ -386,6 +387,7 @@ WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
 WAREHOUSE_SETTINGS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧱 Пластик")],
+        [KeyboardButton(text="🎞️ Пленки ⚙️")],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -1952,6 +1954,14 @@ async def handle_warehouse_plastics(message: Message) -> None:
     await message.answer("📦 Раздел «Пластики». Выберите действие:", reply_markup=WAREHOUSE_PLASTICS_KB)
 
 
+@dp.message(F.text == "🎞️ Пленки")
+async def handle_warehouse_films(message: Message) -> None:
+    await message.answer(
+        "🎞️ Раздел «Пленки» находится в разработке.",
+        reply_markup=WAREHOUSE_MENU_KB,
+    )
+
+
 @dp.message(F.text == "📤 Экспорт")
 async def handle_export_warehouse_plastics(message: Message) -> None:
     await message.answer("⏳ Формирую файл экспорта. Пожалуйста, подождите...")
@@ -3183,6 +3193,16 @@ async def process_plastic_batch_comment(message: Message, state: FSMContext) -> 
         f"Добавил: {summary_employee}\n"
         f"Добавлено: {arrival_formatted}",
         reply_markup=WAREHOUSE_PLASTICS_KB,
+    )
+
+
+@dp.message(F.text == "🎞️ Пленки ⚙️")
+async def handle_warehouse_settings_films(message: Message) -> None:
+    if not await ensure_admin_access(message):
+        return
+    await message.answer(
+        "🎞️ Настройки для пленок находятся в разработке.",
+        reply_markup=WAREHOUSE_SETTINGS_MENU_KB,
     )
 
 
