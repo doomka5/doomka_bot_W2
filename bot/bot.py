@@ -252,6 +252,15 @@ async def init_database() -> None:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS film_storage_locations (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
             # Добавляем администратора
             await conn.execute(
                 """
@@ -328,6 +337,11 @@ class ManageFilmSeriesStates(StatesGroup):
     waiting_for_new_series_name = State()
     waiting_for_manufacturer_for_series_deletion = State()
     waiting_for_series_name_to_delete = State()
+
+
+class ManageFilmStorageStates(StatesGroup):
+    waiting_for_new_storage_location_name = State()
+    waiting_for_storage_location_to_delete = State()
 
 
 class AddWarehousePlasticStates(StatesGroup):
@@ -440,6 +454,7 @@ WAREHOUSE_SETTINGS_FILM_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🏭 Производитель")],
         [KeyboardButton(text="🎬 Серия")],
+        [KeyboardButton(text="🏬 Склад")],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -494,6 +509,15 @@ WAREHOUSE_SETTINGS_FILM_SERIES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить серию")],
         [KeyboardButton(text="➖ Удалить серию")],
+        [KeyboardButton(text="⬅️ Назад к пленкам")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_FILM_STORAGE_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Добавить место хранения пленки")],
+        [KeyboardButton(text="➖ Удалить место хранения пленки")],
         [KeyboardButton(text="⬅️ Назад к пленкам")],
     ],
     resize_keyboard=True,
@@ -696,6 +720,16 @@ async def fetch_film_manufacturers() -> list[str]:
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT name FROM film_manufacturers ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
+async def fetch_film_storage_locations() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM film_storage_locations ORDER BY LOWER(name)"
         )
     return [row["name"] for row in rows]
 
@@ -924,6 +958,38 @@ async def delete_film_series(
             series_name,
         )
     return "deleted" if result.endswith(" 1") else "not_found"
+
+
+async def insert_film_storage_location(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        existing_id = await conn.fetchval(
+            "SELECT id FROM film_storage_locations WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+        if existing_id:
+            return False
+        row = await conn.fetchrow(
+            """
+            INSERT INTO film_storage_locations (name)
+            VALUES ($1)
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_film_storage_location(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM film_storage_locations WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
 
 
 async def fetch_materials_with_thicknesses() -> list[dict[str, Any]]:
@@ -1963,11 +2029,17 @@ async def send_film_settings_overview(message: Message) -> None:
             " а затем укажите для них серии."
         )
         intro = "Список производителей пуст."
+    storage_locations = await fetch_film_storage_locations()
+    storage_text = format_storage_locations_list(storage_locations)
     text = (
         "⚙️ Настройки склада → Пленки.\n\n"
         f"{intro}\n"
         f"{formatted}\n\n"
-        "Используйте кнопки «🏭 Производитель» и «🎬 Серия», чтобы управлять списками."
+        "Используйте кнопки «🏭 Производитель» и «🎬 Серия», чтобы управлять списками."\
+        "\n\n"
+        "Места хранения:\n"
+        f"{storage_text}\n\n"
+        "Кнопка «🏬 Склад» поможет добавить или удалить место хранения."
     )
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_FILM_KB)
 
@@ -1981,6 +2053,18 @@ async def send_film_manufacturers_menu(message: Message) -> None:
         f"{formatted}\n\n"
         "Используйте кнопки ниже, чтобы добавить или удалить производителя.",
         reply_markup=WAREHOUSE_SETTINGS_FILM_MANUFACTURERS_KB,
+    )
+
+
+async def send_film_storage_overview(message: Message) -> None:
+    locations = await fetch_film_storage_locations()
+    formatted = format_storage_locations_list(locations)
+    await message.answer(
+        "⚙️ Настройки склада → Пленки → Склад.\n\n"
+        "Доступные места хранения:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить место.",
+        reply_markup=WAREHOUSE_SETTINGS_FILM_STORAGE_KB,
     )
 
 
@@ -3566,6 +3650,14 @@ async def handle_film_manufacturers_menu(message: Message, state: FSMContext) ->
     await send_film_manufacturers_menu(message)
 
 
+@dp.message(F.text == "🏬 Склад")
+async def handle_film_storage_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_film_storage_overview(message)
+
+
 @dp.message(F.text == "🎬 Серия")
 async def handle_film_series_menu(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
@@ -3675,6 +3767,83 @@ async def process_remove_film_manufacturer(message: Message, state: FSMContext) 
         await message.answer(f"ℹ️ Производитель «{name}» не найден в списке.")
     await state.clear()
     await send_film_settings_overview(message)
+
+
+@dp.message(F.text == "➕ Добавить место хранения пленки")
+async def handle_add_film_storage_location_button(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(
+        ManageFilmStorageStates.waiting_for_new_storage_location_name
+    )
+    locations = await fetch_film_storage_locations()
+    existing_text = format_storage_locations_list(locations)
+    await message.answer(
+        "Введите название места хранения для пленки.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageFilmStorageStates.waiting_for_new_storage_location_name)
+async def process_new_film_storage_location(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_film_storage_location(name):
+        await message.answer(f"✅ Место хранения «{name}» добавлено.")
+    else:
+        await message.answer(f"ℹ️ Место хранения «{name}» уже есть в списке.")
+    await state.clear()
+    await send_film_storage_overview(message)
+
+
+@dp.message(F.text == "➖ Удалить место хранения пленки")
+async def handle_remove_film_storage_location_button(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    locations = await fetch_film_storage_locations()
+    if not locations:
+        await message.answer(
+            "Список мест хранения пуст. Добавьте места перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_FILM_STORAGE_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManageFilmStorageStates.waiting_for_storage_location_to_delete
+    )
+    await message.answer(
+        "Выберите место хранения, которое нужно удалить:",
+        reply_markup=build_storage_locations_keyboard(locations),
+    )
+
+
+@dp.message(ManageFilmStorageStates.waiting_for_storage_location_to_delete)
+async def process_remove_film_storage_location(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_film_storage_location(name):
+        await message.answer(f"🗑 Место хранения «{name}» удалено.")
+    else:
+        await message.answer(f"ℹ️ Место хранения «{name}» не найдено в списке.")
+    await state.clear()
+    await send_film_storage_overview(message)
 
 
 @dp.message(F.text == "➕ Добавить серию")
@@ -4489,6 +4658,12 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     ):
         await state.clear()
         await send_film_settings_overview(message)
+        return
+    if current_state and current_state.startswith(
+        ManageFilmStorageStates.__name__
+    ):
+        await state.clear()
+        await send_film_storage_overview(message)
         return
     await state.clear()
     await send_plastic_settings_overview(message)
