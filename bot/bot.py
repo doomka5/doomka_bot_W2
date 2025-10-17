@@ -499,6 +499,32 @@ WAREHOUSE_SETTINGS_FILM_SERIES_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+WAREHOUSE_FILMS_ADD_TEXT = "➕ Добавить пленку"
+WAREHOUSE_FILMS_WRITE_OFF_TEXT = "➖ Списать пленку"
+WAREHOUSE_FILMS_COMMENT_TEXT = "💬 Комментировать пленку"
+WAREHOUSE_FILMS_MOVE_TEXT = "🔁 Переместить пленку"
+WAREHOUSE_FILMS_SEARCH_TEXT = "🔍 Найти пленку"
+WAREHOUSE_FILMS_EXPORT_TEXT = "📤 Экспорт пленок"
+
+WAREHOUSE_FILMS_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [
+            KeyboardButton(text=WAREHOUSE_FILMS_ADD_TEXT),
+            KeyboardButton(text=WAREHOUSE_FILMS_WRITE_OFF_TEXT),
+        ],
+        [
+            KeyboardButton(text=WAREHOUSE_FILMS_COMMENT_TEXT),
+            KeyboardButton(text=WAREHOUSE_FILMS_MOVE_TEXT),
+        ],
+        [
+            KeyboardButton(text=WAREHOUSE_FILMS_SEARCH_TEXT),
+            KeyboardButton(text=WAREHOUSE_FILMS_EXPORT_TEXT),
+        ],
+        [KeyboardButton(text="⬅️ Назад к складу")],
+    ],
+    resize_keyboard=True,
+)
+
 WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить"), KeyboardButton(text="++добавить пачку")],
@@ -2239,11 +2265,55 @@ async def handle_warehouse_plastics(message: Message) -> None:
 
 
 @dp.message(F.text == "🎞️ Пленки")
-async def handle_warehouse_films(message: Message) -> None:
+async def handle_warehouse_films(message: Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer(
-        "🎞️ Раздел «Пленки» находится в разработке.",
-        reply_markup=WAREHOUSE_MENU_KB,
+        "🎞️ Раздел «Пленки». Выберите действие:",
+        reply_markup=WAREHOUSE_FILMS_KB,
     )
+
+
+async def _reply_films_feature_in_development(message: Message, feature: str) -> None:
+    await message.answer(
+        f"⚙️ Функция «{feature}» для раздела «Пленки» находится в разработке.",
+        reply_markup=WAREHOUSE_FILMS_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_FILMS_ADD_TEXT)
+async def handle_add_warehouse_film(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _reply_films_feature_in_development(message, "Добавление пленки")
+
+
+@dp.message(F.text == WAREHOUSE_FILMS_WRITE_OFF_TEXT)
+async def handle_write_off_warehouse_film(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _reply_films_feature_in_development(message, "Списание пленки")
+
+
+@dp.message(F.text == WAREHOUSE_FILMS_COMMENT_TEXT)
+async def handle_comment_warehouse_film(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _reply_films_feature_in_development(message, "Комментарий по пленке")
+
+
+@dp.message(F.text == WAREHOUSE_FILMS_MOVE_TEXT)
+async def handle_move_warehouse_film(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _reply_films_feature_in_development(message, "Перемещение пленки")
+
+
+@dp.message(F.text == WAREHOUSE_FILMS_SEARCH_TEXT)
+async def handle_search_warehouse_film(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _reply_films_feature_in_development(message, "Поиск пленки")
+
+
+@dp.message(F.text == WAREHOUSE_FILMS_EXPORT_TEXT)
+async def handle_export_warehouse_film(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _reply_films_feature_in_development(message, "Экспорт пленок")
 
 
 @dp.message(F.text == "📤 Экспорт")
