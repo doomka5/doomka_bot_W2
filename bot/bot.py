@@ -375,6 +375,11 @@ class AddWarehouseFilmStates(StatesGroup):
     waiting_for_comment = State()
 
 
+class CommentWarehouseFilmStates(StatesGroup):
+    waiting_for_article = State()
+    waiting_for_comment = State()
+
+
 class AddWarehousePlasticStates(StatesGroup):
     waiting_for_article = State()
     waiting_for_material = State()
@@ -683,6 +688,13 @@ async def _cancel_add_film_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "❌ Добавление пленки отменено.", reply_markup=WAREHOUSE_FILMS_KB
+    )
+
+
+async def _cancel_comment_film_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Изменение комментария отменено.", reply_markup=WAREHOUSE_FILMS_KB
     )
 
 
@@ -1467,6 +1479,38 @@ async def fetch_warehouse_plastic_by_article(article: str) -> Optional[Dict[str,
     return dict(row)
 
 
+async def fetch_warehouse_film_by_article(article: str) -> Optional[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                id,
+                article,
+                manufacturer,
+                series,
+                color_code,
+                color,
+                width,
+                length,
+                warehouse,
+                comment,
+                employee_id,
+                employee_nick,
+                recorded_at
+            FROM warehouse_films
+            WHERE article = $1
+            ORDER BY recorded_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            """,
+            article,
+        )
+    if row is None:
+        return None
+    return dict(row)
+
+
 async def search_warehouse_plastics_advanced(
     material: Optional[str] = None,
     thickness: Optional[Decimal] = None,
@@ -1535,6 +1579,24 @@ async def update_warehouse_plastic_comment(
         result = await conn.execute(
             """
             UPDATE warehouse_plastics
+            SET comment = $2
+            WHERE id = $1
+            """,
+            record_id,
+            comment,
+    )
+    return result.endswith(" 1")
+
+
+async def update_warehouse_film_comment(
+    record_id: int, comment: Optional[str]
+) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE warehouse_films
             SET comment = $2
             WHERE id = $1
             """,
@@ -2572,7 +2634,11 @@ async def handle_write_off_warehouse_film(message: Message, state: FSMContext) -
 @dp.message(F.text == WAREHOUSE_FILMS_COMMENT_TEXT)
 async def handle_comment_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await _reply_films_feature_in_development(message, "Комментарий по пленке")
+    await state.set_state(CommentWarehouseFilmStates.waiting_for_article)
+    await message.answer(
+        "Введите номер артикула, чтобы просмотреть и изменить комментарий к пленке.",
+        reply_markup=CANCEL_KB,
+    )
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_MOVE_TEXT)
@@ -2591,6 +2657,81 @@ async def handle_search_warehouse_film(message: Message, state: FSMContext) -> N
 async def handle_export_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
     await _reply_films_feature_in_development(message, "Экспорт пленок")
+
+
+@dp.message(CommentWarehouseFilmStates.waiting_for_article)
+async def process_film_comment_article(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_comment_film_flow(message, state)
+        return
+    article = (message.text or "").strip()
+    if not article.isdigit():
+        await message.answer(
+            "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    record = await fetch_warehouse_film_by_article(article)
+    if record is None:
+        await message.answer(
+            "ℹ️ Пленка с таким артикулом не найдена. Попробуйте другой артикул.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    previous_comment = record.get("comment")
+    formatted = format_film_record_for_message(record)
+    await state.update_data(
+        film_id=record["id"],
+        article=record.get("article"),
+        previous_comment=previous_comment,
+    )
+    await state.set_state(CommentWarehouseFilmStates.waiting_for_comment)
+    await message.answer(
+        "Найдена запись:\n\n"
+        f"{formatted}\n\n"
+        f"Текущий комментарий: {previous_comment or '—'}",
+        reply_markup=CANCEL_KB,
+    )
+    await message.answer(
+        "Введите новый комментарий. Пустое сообщение удалит существующий комментарий.",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(CommentWarehouseFilmStates.waiting_for_comment)
+async def process_film_comment_update(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_comment_film_flow(message, state)
+        return
+    data = await state.get_data()
+    record_id = data.get("film_id")
+    article = data.get("article")
+    previous_comment = data.get("previous_comment")
+    if record_id is None or article is None:
+        await _cancel_comment_film_flow(message, state)
+        return
+    new_comment_raw = (message.text or "").strip()
+    new_comment: Optional[str]
+    if new_comment_raw:
+        new_comment = new_comment_raw
+    else:
+        new_comment = None
+    updated = await update_warehouse_film_comment(record_id, new_comment)
+    if not updated:
+        await message.answer(
+            "⚠️ Не удалось обновить комментарий. Попробуйте позже.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        await state.clear()
+        return
+    await state.clear()
+    await message.answer(
+        "✅ Комментарий обновлён.\n"
+        f"Артикул: {article}\n"
+        f"Старый комментарий: {previous_comment or '—'}\n"
+        f"Новый комментарий: {new_comment or '—'}",
+        reply_markup=WAREHOUSE_FILMS_KB,
+    )
 
 
 @dp.message(AddWarehouseFilmStates.waiting_for_article)
