@@ -380,6 +380,11 @@ class CommentWarehouseFilmStates(StatesGroup):
     waiting_for_comment = State()
 
 
+class MoveWarehouseFilmStates(StatesGroup):
+    waiting_for_article = State()
+    waiting_for_new_location = State()
+
+
 class AddWarehousePlasticStates(StatesGroup):
     waiting_for_article = State()
     waiting_for_material = State()
@@ -695,6 +700,13 @@ async def _cancel_comment_film_flow(message: Message, state: FSMContext) -> None
     await state.clear()
     await message.answer(
         "❌ Изменение комментария отменено.", reply_markup=WAREHOUSE_FILMS_KB
+    )
+
+
+async def _cancel_move_film_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Перемещение пленки отменено.", reply_markup=WAREHOUSE_FILMS_KB
     )
 
 
@@ -1604,6 +1616,47 @@ async def update_warehouse_film_comment(
             comment,
         )
     return result.endswith(" 1")
+
+
+async def update_warehouse_film_location(
+    record_id: int,
+    new_location: str,
+    employee_id: Optional[int],
+    employee_nick: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE warehouse_films
+            SET warehouse = $2,
+                employee_id = COALESCE($3, employee_id),
+                employee_nick = COALESCE($4, employee_nick)
+            WHERE id = $1
+            RETURNING
+                id,
+                article,
+                manufacturer,
+                series,
+                color_code,
+                color,
+                width,
+                length,
+                warehouse,
+                comment,
+                employee_id,
+                employee_nick,
+                recorded_at
+            """,
+            record_id,
+            new_location,
+            employee_id,
+            employee_nick,
+        )
+    if row is None:
+        return None
+    return dict(row)
 
 
 async def update_warehouse_plastic_location(
@@ -2644,7 +2697,18 @@ async def handle_comment_warehouse_film(message: Message, state: FSMContext) -> 
 @dp.message(F.text == WAREHOUSE_FILMS_MOVE_TEXT)
 async def handle_move_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await _reply_films_feature_in_development(message, "Перемещение пленки")
+    locations = await fetch_film_storage_locations()
+    if not locations:
+        await message.answer(
+            "Справочник мест хранения пуст. Добавьте места в настройках склада.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    await state.set_state(MoveWarehouseFilmStates.waiting_for_article)
+    await message.answer(
+        "Введите номер артикула, чтобы выбрать новое место хранения.",
+        reply_markup=CANCEL_KB,
+    )
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_SEARCH_TEXT)
@@ -2730,6 +2794,114 @@ async def process_film_comment_update(message: Message, state: FSMContext) -> No
         f"Артикул: {article}\n"
         f"Старый комментарий: {previous_comment or '—'}\n"
         f"Новый комментарий: {new_comment or '—'}",
+        reply_markup=WAREHOUSE_FILMS_KB,
+    )
+
+
+@dp.message(MoveWarehouseFilmStates.waiting_for_article)
+async def process_move_film_article(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_move_film_flow(message, state)
+        return
+    article = (message.text or "").strip()
+    if not article.isdigit():
+        await message.answer(
+            "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    record = await fetch_warehouse_film_by_article(article)
+    if record is None:
+        await message.answer(
+            "ℹ️ Пленка с таким артикулом не найдена. Попробуйте другой артикул.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    locations = await fetch_film_storage_locations()
+    if not locations:
+        await state.clear()
+        await message.answer(
+            "Справочник мест хранения пуст. Добавьте места в настройках склада.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    await state.update_data(
+        film_id=record["id"],
+        article=record.get("article"),
+        previous_location=record.get("warehouse"),
+    )
+    previous_location = record.get("warehouse") or "—"
+    formatted_record = format_film_record_for_message(record)
+    await state.set_state(MoveWarehouseFilmStates.waiting_for_new_location)
+    await message.answer(
+        "Найдена запись:\n\n"
+        f"{formatted_record}\n\n"
+        f"Текущее место хранения: {previous_location}\n\n"
+        "Выберите новое место хранения из списка ниже.",
+        reply_markup=build_storage_locations_keyboard(locations),
+    )
+
+
+@dp.message(MoveWarehouseFilmStates.waiting_for_new_location)
+async def process_move_film_new_location(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_move_film_flow(message, state)
+        return
+    locations = await fetch_film_storage_locations()
+    if not locations:
+        await state.clear()
+        await message.answer(
+            "Справочник мест хранения пуст. Добавьте места в настройках склада.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    raw_location = (message.text or "").strip()
+    match = next((item for item in locations if item.lower() == raw_location.lower()), None)
+    if match is None:
+        await message.answer(
+            "ℹ️ Место хранения не найдено. Выберите одно из списка.",
+            reply_markup=build_storage_locations_keyboard(locations),
+        )
+        return
+    data = await state.get_data()
+    record_id = data.get("film_id")
+    article = data.get("article")
+    previous_location_raw = data.get("previous_location")
+    previous_location_display = previous_location_raw or "—"
+    if record_id is None or article is None:
+        await _cancel_move_film_flow(message, state)
+        return
+    if previous_location_raw and previous_location_raw.lower() == match.lower():
+        await message.answer(
+            "ℹ️ Пленка уже находится в выбранном месте. Выберите другое место.",
+            reply_markup=build_storage_locations_keyboard(locations),
+        )
+        return
+    employee_id = message.from_user.id if message.from_user else None
+    employee_nick: Optional[str] = None
+    if message.from_user:
+        employee_nick = message.from_user.username or message.from_user.full_name
+    updated_record = await update_warehouse_film_location(
+        record_id=record_id,
+        new_location=match,
+        employee_id=employee_id,
+        employee_nick=employee_nick,
+    )
+    if updated_record is None:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось обновить место хранения. Попробуйте позже.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    await state.clear()
+    formatted = format_film_record_for_message(updated_record)
+    await message.answer(
+        "✅ Место хранения обновлено.\n\n"
+        f"Артикул: {article}\n"
+        f"Предыдущее место: {previous_location_display}\n"
+        f"Новое место: {match}\n\n"
+        f"Актуальные данные:\n{formatted}",
         reply_markup=WAREHOUSE_FILMS_KB,
     )
 
