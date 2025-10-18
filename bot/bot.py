@@ -385,6 +385,13 @@ class MoveWarehouseFilmStates(StatesGroup):
     waiting_for_new_location = State()
 
 
+class SearchWarehouseFilmStates(StatesGroup):
+    choosing_mode = State()
+    waiting_for_article = State()
+    waiting_for_number = State()
+    waiting_for_color = State()
+
+
 class AddWarehousePlasticStates(StatesGroup):
     waiting_for_article = State()
     waiting_for_material = State()
@@ -571,6 +578,12 @@ WAREHOUSE_FILMS_MOVE_TEXT = "🔁 Переместить пленку"
 WAREHOUSE_FILMS_SEARCH_TEXT = "🔍 Найти пленку"
 WAREHOUSE_FILMS_EXPORT_TEXT = "📤 Экспорт пленок"
 
+WAREHOUSE_FILMS_SEARCH_BY_ARTICLE_TEXT = "По артикулу"
+WAREHOUSE_FILMS_SEARCH_BY_NUMBER_TEXT = "По номеру"
+WAREHOUSE_FILMS_SEARCH_BY_COLOR_TEXT = "По цвету"
+WAREHOUSE_FILMS_SEARCH_BACK_TEXT = "⬅️ Назад к пленкам"
+FILM_SEARCH_RESULTS_LIMIT = 15
+
 WAREHOUSE_FILMS_KB = ReplyKeyboardMarkup(
     keyboard=[
         [
@@ -586,6 +599,16 @@ WAREHOUSE_FILMS_KB = ReplyKeyboardMarkup(
             KeyboardButton(text=WAREHOUSE_FILMS_EXPORT_TEXT),
         ],
         [KeyboardButton(text="⬅️ Назад к складу")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_FILMS_SEARCH_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=WAREHOUSE_FILMS_SEARCH_BY_ARTICLE_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_FILMS_SEARCH_BY_NUMBER_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_FILMS_SEARCH_BY_COLOR_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_FILMS_SEARCH_BACK_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -670,6 +693,11 @@ async def _cancel_add_plastic_batch_flow(message: Message, state: FSMContext) ->
 async def _cancel_search_plastic_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("❌ Поиск отменён.", reply_markup=WAREHOUSE_PLASTICS_KB)
+
+
+async def _cancel_search_film_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("❌ Поиск отменён.", reply_markup=WAREHOUSE_FILMS_KB)
 
 
 async def _cancel_comment_plastic_flow(message: Message, state: FSMContext) -> None:
@@ -1523,6 +1551,102 @@ async def fetch_warehouse_film_by_article(article: str) -> Optional[Dict[str, An
     return dict(row)
 
 
+async def fetch_warehouse_film_by_id(record_id: int) -> Optional[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                id,
+                article,
+                manufacturer,
+                series,
+                color_code,
+                color,
+                width,
+                length,
+                warehouse,
+                comment,
+                employee_id,
+                employee_nick,
+                recorded_at
+            FROM warehouse_films
+            WHERE id = $1
+            """,
+            record_id,
+        )
+    if row is None:
+        return None
+    return dict(row)
+
+
+async def search_warehouse_films_by_color_code(
+    color_code: str, limit: int = FILM_SEARCH_RESULTS_LIMIT
+) -> list[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                id,
+                article,
+                manufacturer,
+                series,
+                color_code,
+                color,
+                width,
+                length,
+                warehouse,
+                comment,
+                employee_id,
+                employee_nick,
+                recorded_at
+            FROM warehouse_films
+            WHERE LOWER(color_code) = LOWER($1)
+            ORDER BY recorded_at DESC NULLS LAST, id DESC
+            LIMIT $2
+            """,
+            color_code,
+            limit,
+        )
+    return [dict(row) for row in rows]
+
+
+async def search_warehouse_films_by_color(
+    color_query: str, limit: int = FILM_SEARCH_RESULTS_LIMIT
+) -> list[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                id,
+                article,
+                manufacturer,
+                series,
+                color_code,
+                color,
+                width,
+                length,
+                warehouse,
+                comment,
+                employee_id,
+                employee_nick,
+                recorded_at
+            FROM warehouse_films
+            WHERE color ILIKE '%' || $1 || '%'
+            ORDER BY recorded_at DESC NULLS LAST, id DESC
+            LIMIT $2
+            """,
+            color_query,
+            limit,
+        )
+    return [dict(row) for row in rows]
+
+
 async def search_warehouse_plastics_advanced(
     material: Optional[str] = None,
     thickness: Optional[Decimal] = None,
@@ -2065,6 +2189,14 @@ def format_film_record_for_message(record: Dict[str, Any]) -> str:
         f"ID: {record.get('employee_id') or '—'}\n"
         f"Дата и время: {recorded_text}"
     )
+
+
+def format_film_records_list_for_message(records: list[Dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for index, record in enumerate(records, start=1):
+        formatted = format_film_record_for_message(record)
+        parts.append(f"{index}.\n{formatted}")
+    return "\n\n".join(parts)
 
 
 def format_written_off_plastic_record(record: Dict[str, Any]) -> str:
@@ -2714,13 +2846,175 @@ async def handle_move_warehouse_film(message: Message, state: FSMContext) -> Non
 @dp.message(F.text == WAREHOUSE_FILMS_SEARCH_TEXT)
 async def handle_search_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await _reply_films_feature_in_development(message, "Поиск пленки")
+    await state.set_state(SearchWarehouseFilmStates.choosing_mode)
+    await message.answer(
+        "Выберите параметр поиска:",
+        reply_markup=WAREHOUSE_FILMS_SEARCH_KB,
+    )
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_EXPORT_TEXT)
 async def handle_export_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
     await _reply_films_feature_in_development(message, "Экспорт пленок")
+
+
+@dp.message(SearchWarehouseFilmStates.choosing_mode)
+async def process_search_film_menu(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_film_flow(message, state)
+        return
+    if text == WAREHOUSE_FILMS_SEARCH_BACK_TEXT:
+        await state.clear()
+        await message.answer(
+            "Вы вернулись в раздел «Пленки».",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    if text == WAREHOUSE_FILMS_SEARCH_BY_ARTICLE_TEXT:
+        await state.set_state(SearchWarehouseFilmStates.waiting_for_article)
+        await message.answer(
+            "Введите артикул пленки для поиска.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if text == WAREHOUSE_FILMS_SEARCH_BY_NUMBER_TEXT:
+        await state.set_state(SearchWarehouseFilmStates.waiting_for_number)
+        await message.answer(
+            "Введите номер пленки (ID записи или код цвета).",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if text == WAREHOUSE_FILMS_SEARCH_BY_COLOR_TEXT:
+        await state.set_state(SearchWarehouseFilmStates.waiting_for_color)
+        await message.answer(
+            "Укажите цвет или его часть для поиска.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await message.answer(
+        "Пожалуйста, выберите один из вариантов меню ниже.",
+        reply_markup=WAREHOUSE_FILMS_SEARCH_KB,
+    )
+
+
+@dp.message(SearchWarehouseFilmStates.waiting_for_article)
+async def process_search_film_by_article(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_film_flow(message, state)
+        return
+    if not text.isdigit():
+        await message.answer(
+            "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    record = await fetch_warehouse_film_by_article(text)
+    if record is None:
+        await message.answer(
+            "ℹ️ Пленка с таким артикулом не найдена. Попробуйте другой артикул.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    formatted = format_film_record_for_message(record)
+    await message.answer(
+        "Найдена запись:\n\n" f"{formatted}",
+        reply_markup=CANCEL_KB,
+    )
+    await message.answer(
+        "Введите другой артикул для нового поиска или нажмите «❌ Отмена».",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(SearchWarehouseFilmStates.waiting_for_number)
+async def process_search_film_by_number(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_film_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Номер не может быть пустым. Укажите значение.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if text.isdigit():
+        record_id = int(text)
+        record = await fetch_warehouse_film_by_id(record_id)
+        if record is not None:
+            formatted = format_film_record_for_message(record)
+            await message.answer(
+                "Найдена запись:\n\n" f"{formatted}",
+                reply_markup=CANCEL_KB,
+            )
+            await message.answer(
+                "Введите другой номер для поиска или нажмите «❌ Отмена».",
+                reply_markup=CANCEL_KB,
+            )
+            return
+    matches = await search_warehouse_films_by_color_code(
+        text, limit=FILM_SEARCH_RESULTS_LIMIT
+    )
+    if not matches:
+        await message.answer(
+            "ℹ️ Пленки с таким номером не найдены. Попробуйте указать другой номер.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    formatted_list = format_film_records_list_for_message(matches)
+    header = [f"Найдено записей: {len(matches)}."]
+    if len(matches) == FILM_SEARCH_RESULTS_LIMIT:
+        header.append(
+            f"Показаны первые {FILM_SEARCH_RESULTS_LIMIT} записей. Уточните запрос для более точного поиска."
+        )
+    await message.answer(
+        " ".join(header) + "\n\n" + formatted_list,
+        reply_markup=CANCEL_KB,
+    )
+    await message.answer(
+        "Введите другой номер для поиска или нажмите «❌ Отмена».",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(SearchWarehouseFilmStates.waiting_for_color)
+async def process_search_film_by_color(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_film_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Цвет не может быть пустым. Укажите значение для поиска.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    matches = await search_warehouse_films_by_color(
+        text, limit=FILM_SEARCH_RESULTS_LIMIT
+    )
+    if not matches:
+        await message.answer(
+            "ℹ️ Пленки с таким цветом не найдены. Попробуйте другой запрос.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    formatted_list = format_film_records_list_for_message(matches)
+    header = [f"Найдено записей: {len(matches)}."]
+    if len(matches) == FILM_SEARCH_RESULTS_LIMIT:
+        header.append(
+            f"Показаны первые {FILM_SEARCH_RESULTS_LIMIT} записей. Уточните запрос для более точного поиска."
+        )
+    await message.answer(
+        " ".join(header) + "\n\n" + formatted_list,
+        reply_markup=CANCEL_KB,
+    )
+    await message.answer(
+        "Введите другой цвет для поиска или нажмите «❌ Отмена».",
+        reply_markup=CANCEL_KB,
+    )
 
 
 @dp.message(CommentWarehouseFilmStates.waiting_for_article)
