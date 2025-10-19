@@ -504,6 +504,9 @@ USERS_MENU_KB = ReplyKeyboardMarkup(
 )
 
 WAREHOUSE_ELECTRICS_TEXT = "⚡ Электрика"
+WAREHOUSE_ELECTRICS_LED_STRIPS_TEXT = "💡 Led лента"
+WAREHOUSE_ELECTRICS_LED_MODULES_TEXT = "🧩 Led модули"
+WAREHOUSE_ELECTRICS_POWER_SUPPLIES_TEXT = "🔌 Блоки питания"
 
 WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -663,7 +666,12 @@ WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
 )
 
 WAREHOUSE_ELECTRICS_KB = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="⬅️ Назад к складу")]],
+    keyboard=[
+        [KeyboardButton(text=WAREHOUSE_ELECTRICS_LED_STRIPS_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_ELECTRICS_LED_MODULES_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_ELECTRICS_POWER_SUPPLIES_TEXT)],
+        [KeyboardButton(text="⬅️ Назад к складу")],
+    ],
     resize_keyboard=True,
 )
 
@@ -3036,6 +3044,39 @@ async def handle_warehouse_electrics(message: Message, state: FSMContext) -> Non
     await state.clear()
     await message.answer(
         "⚡ Раздел «Электрика». Функционал находится в разработке.",
+        reply_markup=WAREHOUSE_ELECTRICS_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_ELECTRICS_LED_STRIPS_TEXT)
+async def handle_warehouse_electrics_led_strips(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "💡 Раздел «Led лента». Функционал находится в разработке.",
+        reply_markup=WAREHOUSE_ELECTRICS_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_ELECTRICS_LED_MODULES_TEXT)
+async def handle_warehouse_electrics_led_modules(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "🧩 Раздел «Led модули». Функционал находится в разработке.",
+        reply_markup=WAREHOUSE_ELECTRICS_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_ELECTRICS_POWER_SUPPLIES_TEXT)
+async def handle_warehouse_electrics_power_supplies(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "🔌 Раздел «Блоки питания». Функционал находится в разработке.",
         reply_markup=WAREHOUSE_ELECTRICS_KB,
     )
 
