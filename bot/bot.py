@@ -1604,7 +1604,7 @@ async def search_warehouse_films_by_color_code(
                 employee_nick,
                 recorded_at
             FROM warehouse_films
-            WHERE LOWER(color_code) = LOWER($1)
+            WHERE color_code ILIKE '%' || $1 || '%'
             ORDER BY recorded_at DESC NULLS LAST, id DESC
             LIMIT $2
             """,
@@ -2882,7 +2882,7 @@ async def process_search_film_menu(message: Message, state: FSMContext) -> None:
     if text == WAREHOUSE_FILMS_SEARCH_BY_NUMBER_TEXT:
         await state.set_state(SearchWarehouseFilmStates.waiting_for_number)
         await message.answer(
-            "Введите номер пленки (ID записи или код цвета).",
+            "Введите номер пленки (код цвета).",
             reply_markup=CANCEL_KB,
         )
         return
@@ -2941,6 +2941,32 @@ async def process_search_film_by_number(message: Message, state: FSMContext) -> 
             reply_markup=CANCEL_KB,
         )
         return
+    matches = await search_warehouse_films_by_color_code(
+        text, limit=FILM_SEARCH_RESULTS_LIMIT
+    )
+    if matches:
+        if len(matches) == 1:
+            formatted = format_film_record_for_message(matches[0])
+            await message.answer(
+                "Найдена запись:\n\n" f"{formatted}",
+                reply_markup=CANCEL_KB,
+            )
+        else:
+            formatted_list = format_film_records_list_for_message(matches)
+            header = [f"Найдено записей: {len(matches)}."]
+            if len(matches) == FILM_SEARCH_RESULTS_LIMIT:
+                header.append(
+                    f"Показаны первые {FILM_SEARCH_RESULTS_LIMIT} записей. Уточните запрос для более точного поиска."
+                )
+            await message.answer(
+                " ".join(header) + "\n\n" + formatted_list,
+                reply_markup=CANCEL_KB,
+            )
+        await message.answer(
+            "Введите другой номер (код цвета) для поиска или нажмите «❌ Отмена».",
+            reply_markup=CANCEL_KB,
+        )
+        return
     if text.isdigit():
         record_id = int(text)
         record = await fetch_warehouse_film_by_id(record_id)
@@ -2951,31 +2977,12 @@ async def process_search_film_by_number(message: Message, state: FSMContext) -> 
                 reply_markup=CANCEL_KB,
             )
             await message.answer(
-                "Введите другой номер для поиска или нажмите «❌ Отмена».",
+                "Введите другой номер (код цвета) для поиска или нажмите «❌ Отмена».",
                 reply_markup=CANCEL_KB,
             )
             return
-    matches = await search_warehouse_films_by_color_code(
-        text, limit=FILM_SEARCH_RESULTS_LIMIT
-    )
-    if not matches:
-        await message.answer(
-            "ℹ️ Пленки с таким номером не найдены. Попробуйте указать другой номер.",
-            reply_markup=CANCEL_KB,
-        )
-        return
-    formatted_list = format_film_records_list_for_message(matches)
-    header = [f"Найдено записей: {len(matches)}."]
-    if len(matches) == FILM_SEARCH_RESULTS_LIMIT:
-        header.append(
-            f"Показаны первые {FILM_SEARCH_RESULTS_LIMIT} записей. Уточните запрос для более точного поиска."
-        )
     await message.answer(
-        " ".join(header) + "\n\n" + formatted_list,
-        reply_markup=CANCEL_KB,
-    )
-    await message.answer(
-        "Введите другой номер для поиска или нажмите «❌ Отмена».",
+        "ℹ️ Пленки с таким номером (кодом цвета) не найдены. Попробуйте указать другой номер.",
         reply_markup=CANCEL_KB,
     )
 
