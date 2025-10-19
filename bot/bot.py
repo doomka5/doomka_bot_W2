@@ -1529,6 +1529,33 @@ async def fetch_all_warehouse_plastics() -> list[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+async def fetch_all_warehouse_films() -> list[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                id,
+                article,
+                manufacturer,
+                series,
+                color_code,
+                color,
+                width,
+                length,
+                warehouse,
+                comment,
+                employee_id,
+                employee_nick,
+                recorded_at
+            FROM warehouse_films
+            ORDER BY recorded_at DESC NULLS LAST, id DESC
+            """
+        )
+    return [dict(row) for row in rows]
+
+
 async def fetch_warehouse_plastic_by_article(article: str) -> Optional[Dict[str, Any]]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -2278,6 +2305,63 @@ def build_plastics_export_file(records: list[Dict[str, Any]]) -> BufferedInputFi
     buffer.seek(0)
     timestamp = datetime.now(WARSAW_TZ).strftime("%Y%m%d_%H%M%S")
     filename = f"plastics_export_{timestamp}.xlsx"
+    return BufferedInputFile(buffer.getvalue(), filename=filename)
+
+
+def build_films_export_file(records: list[Dict[str, Any]]) -> BufferedInputFile:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Films"
+
+    headers = [
+        "Артикул",
+        "Производитель",
+        "Серия",
+        "Код цвета",
+        "Цвет",
+        "Ширина (мм)",
+        "Длина (мм)",
+        "Место хранения",
+        "Комментарий",
+        "Ник сотрудника",
+        "ID сотрудника",
+        "Дата и время записи",
+    ]
+    sheet.append(headers)
+
+    for record in records:
+        row = [
+            record.get("article"),
+            record.get("manufacturer"),
+            record.get("series"),
+            record.get("color_code"),
+            record.get("color"),
+            _decimal_to_excel_number(record.get("width")),
+            _decimal_to_excel_number(record.get("length")),
+            record.get("warehouse"),
+            record.get("comment"),
+            record.get("employee_nick"),
+            record.get("employee_id"),
+            _format_datetime_for_excel(record.get("recorded_at")),
+        ]
+        sheet.append(row)
+
+    for column_index, column_cells in enumerate(sheet.columns, start=1):
+        max_length = 0
+        for cell in column_cells:
+            value = cell.value
+            if value is None:
+                continue
+            max_length = max(max_length, len(str(value)))
+        adjusted_width = min(max(12, max_length + 2), 40)
+        column_letter = get_column_letter(column_index)
+        sheet.column_dimensions[column_letter].width = adjusted_width
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    timestamp = datetime.now(WARSAW_TZ).strftime("%Y%m%d_%H%M%S")
+    filename = f"films_export_{timestamp}.xlsx"
     return BufferedInputFile(buffer.getvalue(), filename=filename)
 
 
@@ -3108,7 +3192,39 @@ async def handle_search_warehouse_film(message: Message, state: FSMContext) -> N
 @dp.message(F.text == WAREHOUSE_FILMS_EXPORT_TEXT)
 async def handle_export_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await _reply_films_feature_in_development(message, "Экспорт пленок")
+    await message.answer("⏳ Формирую файл экспорта. Пожалуйста, подождите...")
+    try:
+        records = await fetch_all_warehouse_films()
+    except Exception:
+        logging.exception("Failed to fetch films for export")
+        await message.answer(
+            "⚠️ Не удалось получить данные склада. Попробуйте позже.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+
+    if not records:
+        await message.answer(
+            "ℹ️ Нет данных для экспорта.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+
+    try:
+        export_file = build_films_export_file(records)
+    except Exception:
+        logging.exception("Failed to build films export file")
+        await message.answer(
+            "⚠️ Не удалось сформировать файл экспорта. Попробуйте позже.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+
+    await message.answer_document(
+        document=export_file,
+        caption="📄 Экспорт пленок",
+        reply_markup=WAREHOUSE_FILMS_KB,
+    )
 
 
 @dp.message(SearchWarehouseFilmStates.choosing_mode)
