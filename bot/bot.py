@@ -263,6 +263,15 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS led_module_lens_counts (
+                    id SERIAL PRIMARY KEY,
+                    value INTEGER UNIQUE NOT NULL CHECK (value > 0),
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS led_strip_manufacturers (
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -441,6 +450,11 @@ class ManageLedModuleSeriesStates(StatesGroup):
     waiting_for_new_series_name = State()
     waiting_for_manufacturer_for_series_deletion = State()
     waiting_for_series_name_to_delete = State()
+
+
+class ManageLedModuleLensStates(StatesGroup):
+    waiting_for_new_lens_count = State()
+    waiting_for_lens_count_to_delete = State()
 
 
 class ManageLedStripManufacturerStates(StatesGroup):
@@ -629,11 +643,14 @@ WAREHOUSE_SETTINGS_ELECTRICS_KB = ReplyKeyboardMarkup(
 
 LED_MODULES_MANUFACTURERS_MENU_TEXT = "🏭 Производитель Led модулей"
 LED_MODULES_SERIES_MENU_TEXT = "🎬 Серия Led модулей"
+LED_MODULES_LENS_MENU_TEXT = "🔢 Количество линз"
 LED_MODULES_BACK_TEXT = "⬅️ Назад к Led модулям"
 LED_MODULES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led модулей"
 LED_MODULES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led модулей"
 LED_MODULES_ADD_SERIES_TEXT = "➕ Добавить серию Led модулей"
 LED_MODULES_REMOVE_SERIES_TEXT = "➖ Удалить серию Led модулей"
+LED_MODULES_ADD_LENS_COUNT_TEXT = "➕ Добавить количество линз"
+LED_MODULES_REMOVE_LENS_COUNT_TEXT = "➖ Удалить количество линз"
 LED_STRIPS_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led ленты"
 LED_STRIPS_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led ленты"
 POWER_SUPPLIES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя блоков питания"
@@ -643,6 +660,7 @@ WAREHOUSE_SETTINGS_LED_MODULES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_MODULES_MANUFACTURERS_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_SERIES_MENU_TEXT)],
+        [KeyboardButton(text=LED_MODULES_LENS_MENU_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
@@ -661,6 +679,15 @@ WAREHOUSE_SETTINGS_LED_MODULES_SERIES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_MODULES_ADD_SERIES_TEXT)],
         [KeyboardButton(text=LED_MODULES_REMOVE_SERIES_TEXT)],
+        [KeyboardButton(text=LED_MODULES_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_LED_MODULES_LENS_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_MODULES_ADD_LENS_COUNT_TEXT)],
+        [KeyboardButton(text=LED_MODULES_REMOVE_LENS_COUNT_TEXT)],
         [KeyboardButton(text=LED_MODULES_BACK_TEXT)],
     ],
     resize_keyboard=True,
@@ -1083,6 +1110,16 @@ async def fetch_led_module_manufacturers_with_series() -> list[dict[str, Any]]:
     return result
 
 
+async def fetch_led_module_lens_counts() -> list[int]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT value FROM led_module_lens_counts ORDER BY value"
+        )
+    return [row["value"] for row in rows]
+
+
 async def fetch_led_module_series_by_manufacturer(
     manufacturer_name: str,
 ) -> list[str]:
@@ -1328,6 +1365,22 @@ async def delete_led_module_manufacturer(name: str) -> bool:
     return result.endswith(" 1")
 
 
+async def insert_led_module_lens_count(value: int) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_module_lens_counts (value)
+            VALUES ($1)
+            ON CONFLICT (value) DO NOTHING
+            RETURNING id
+            """,
+            value,
+        )
+    return row is not None
+
+
 async def insert_led_module_series(
     manufacturer_name: str, series_name: str
 ) -> str:
@@ -1393,6 +1446,17 @@ async def delete_led_module_series(
             series_name,
         )
     return "deleted" if result.endswith(" 1") else "not_found"
+
+
+async def delete_led_module_lens_count(value: int) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_module_lens_counts WHERE value = $1",
+            value,
+        )
+    return result.endswith(" 1")
 
 
 async def insert_led_strip_manufacturer(name: str) -> bool:
@@ -2969,6 +3033,14 @@ def build_series_keyboard(series: list[str]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_lens_counts_keyboard(counts: list[int]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for value in counts:
+        rows.append([KeyboardButton(text=str(value))])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 def build_thickness_keyboard(thicknesses: list[Decimal]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for value in thicknesses:
@@ -3141,6 +3213,8 @@ async def send_electrics_settings_overview(message: Message) -> None:
 
 async def send_led_modules_settings_overview(message: Message) -> None:
     manufacturers = await fetch_led_module_manufacturers_with_series()
+    lens_counts = await fetch_led_module_lens_counts()
+    formatted_lens_counts = format_materials_list([str(value) for value in lens_counts])
     if manufacturers:
         lines: list[str] = []
         for manufacturer in manufacturers:
@@ -3167,6 +3241,11 @@ async def send_led_modules_settings_overview(message: Message) -> None:
             "Производители ещё не добавлены. Добавьте производителя, чтобы начать."\
             " Затем можно будет указать серии."
         )
+    text += (
+        "\n\nДоступные количества линз:\n"
+        f"{formatted_lens_counts}\n\n"
+        "Используйте кнопку «🔢 Количество линз», чтобы управлять общим списком значений."
+    )
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB)
 
 
@@ -3179,6 +3258,18 @@ async def send_led_module_manufacturers_menu(message: Message) -> None:
         f"{formatted}\n\n"
         "Используйте кнопки ниже, чтобы добавить или удалить производителя.",
         reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_MANUFACTURERS_KB,
+    )
+
+
+async def send_led_module_lens_menu(message: Message) -> None:
+    lens_counts = await fetch_led_module_lens_counts()
+    formatted = format_materials_list([str(value) for value in lens_counts])
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led модули → Количество линз.\n\n"
+        "Доступные количества линз:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить значение.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_LENS_KB,
     )
 
 
@@ -6057,6 +6148,14 @@ async def handle_led_module_manufacturers_menu(
     await send_led_module_manufacturers_menu(message)
 
 
+@dp.message(F.text == LED_MODULES_LENS_MENU_TEXT)
+async def handle_led_module_lens_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_module_lens_menu(message)
+
+
 @dp.message(F.text == LED_MODULES_SERIES_MENU_TEXT)
 async def handle_led_module_series_menu(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
@@ -6237,6 +6336,86 @@ async def process_remove_led_module_manufacturer(
         await message.answer(f"ℹ️ Производитель «{name}» не найден в списке.")
     await state.clear()
     await send_led_modules_settings_overview(message)
+
+
+@dp.message(F.text == LED_MODULES_ADD_LENS_COUNT_TEXT)
+async def handle_add_led_module_lens_count(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageLedModuleLensStates.waiting_for_new_lens_count)
+    existing = await fetch_led_module_lens_counts()
+    existing_text = format_materials_list([str(value) for value in existing])
+    await message.answer(
+        "Введите количество линз (целое положительное число).\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedModuleLensStates.waiting_for_new_lens_count)
+async def process_new_led_module_lens_count(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = parse_positive_integer(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Введите положительное целое число. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if await insert_led_module_lens_count(value):
+        await message.answer(f"✅ Количество линз «{value}» добавлено.")
+    else:
+        await message.answer(f"ℹ️ Количество линз «{value}» уже есть в списке.")
+    await state.clear()
+    await send_led_module_lens_menu(message)
+
+
+@dp.message(F.text == LED_MODULES_REMOVE_LENS_COUNT_TEXT)
+async def handle_remove_led_module_lens_count(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    existing = await fetch_led_module_lens_counts()
+    if not existing:
+        await message.answer(
+            "Список количеств линз пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_LENS_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageLedModuleLensStates.waiting_for_lens_count_to_delete)
+    await message.answer(
+        "Выберите количество линз, которое нужно удалить:",
+        reply_markup=build_lens_counts_keyboard(existing),
+    )
+
+
+@dp.message(ManageLedModuleLensStates.waiting_for_lens_count_to_delete)
+async def process_remove_led_module_lens_count(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = parse_positive_integer(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Введите положительное целое число. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if await delete_led_module_lens_count(value):
+        await message.answer(f"🗑 Количество линз «{value}» удалено.")
+        await state.clear()
+        await send_led_module_lens_menu(message)
+    else:
+        await message.answer(
+            f"ℹ️ Количество линз «{value}» не найдено в списке.",
+            reply_markup=CANCEL_KB,
+        )
 
 
 @dp.message(F.text == LED_MODULES_ADD_SERIES_TEXT)
