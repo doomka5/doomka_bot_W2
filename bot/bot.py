@@ -631,9 +631,6 @@ LED_MODULES_ADD_MANUFACTURER_TEXT = "➕ Добавить производите
 LED_MODULES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led модулей"
 LED_MODULES_ADD_SERIES_TEXT = "➕ Добавить серию Led модулей"
 LED_MODULES_REMOVE_SERIES_TEXT = "➖ Удалить серию Led модулей"
-LED_MODULES_MANUFACTURERS_SECTION_TEXT = "🏭 Производитель"
-LED_MODULES_SERIES_SECTION_TEXT = "🎬 Серия"
-LED_MODULES_BACK_TEXT = "⬅️ Назад к Led модулям"
 LED_STRIPS_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led ленты"
 LED_STRIPS_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led ленты"
 POWER_SUPPLIES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя блоков питания"
@@ -641,27 +638,11 @@ POWER_SUPPLIES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производи
 
 WAREHOUSE_SETTINGS_LED_MODULES_KB = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text=LED_MODULES_MANUFACTURERS_SECTION_TEXT)],
-        [KeyboardButton(text=LED_MODULES_SERIES_SECTION_TEXT)],
-        [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
-    ],
-    resize_keyboard=True,
-)
-
-WAREHOUSE_SETTINGS_LED_MODULE_MANUFACTURERS_KB = ReplyKeyboardMarkup(
-    keyboard=[
         [KeyboardButton(text=LED_MODULES_ADD_MANUFACTURER_TEXT)],
         [KeyboardButton(text=LED_MODULES_REMOVE_MANUFACTURER_TEXT)],
-        [KeyboardButton(text=LED_MODULES_BACK_TEXT)],
-    ],
-    resize_keyboard=True,
-)
-
-WAREHOUSE_SETTINGS_LED_MODULE_SERIES_KB = ReplyKeyboardMarkup(
-    keyboard=[
         [KeyboardButton(text=LED_MODULES_ADD_SERIES_TEXT)],
         [KeyboardButton(text=LED_MODULES_REMOVE_SERIES_TEXT)],
-        [KeyboardButton(text=LED_MODULES_BACK_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -3159,7 +3140,7 @@ async def send_led_modules_settings_overview(message: Message) -> None:
             "⚙️ Настройки склада → Электрика → Led модули.\n\n"
             "Доступные производители и серии:\n"
             f"{formatted}\n\n"
-            "Выберите раздел, чтобы управлять производителями или сериями."
+            "Используйте кнопки ниже, чтобы управлять производителями и сериями."
         )
     else:
         text = (
@@ -3167,48 +3148,6 @@ async def send_led_modules_settings_overview(message: Message) -> None:
             "Сначала добавьте производителей, чтобы указать серии."
         )
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB)
-
-
-async def send_led_module_manufacturers_overview(message: Message) -> None:
-    manufacturers = await fetch_led_module_manufacturers()
-    formatted = format_materials_list(manufacturers)
-    await message.answer(
-        "⚙️ Настройки склада → Электрика → Led модули → Производитель.\n\n"
-        "Доступные производители:\n"
-        f"{formatted}\n\n"
-        "Используйте кнопки ниже, чтобы добавить или удалить производителя.",
-        reply_markup=WAREHOUSE_SETTINGS_LED_MODULE_MANUFACTURERS_KB,
-    )
-
-
-async def send_led_module_series_overview(message: Message) -> None:
-    manufacturers = await fetch_led_module_manufacturers_with_series()
-    if manufacturers:
-        lines: list[str] = []
-        for manufacturer in manufacturers:
-            name = manufacturer["name"]
-            formatted_series = format_series_list(manufacturer.get("series") or [])
-            lines.append(
-                "\n".join(
-                    [
-                        f"• {name}",
-                        f"   Серии: {formatted_series}",
-                    ]
-                )
-            )
-        formatted = "\n".join(lines)
-        text = (
-            "⚙️ Настройки склада → Электрика → Led модули → Серия.\n\n"
-            "Доступные производители и серии:\n"
-            f"{formatted}\n\n"
-            "Используйте кнопки ниже, чтобы добавить или удалить серию."
-        )
-    else:
-        text = (
-            "⚙️ Настройки склада → Электрика → Led модули → Серия.\n\n"
-            "Сначала добавьте производителей, чтобы указывать серии."
-        )
-    await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_LED_MODULE_SERIES_KB)
 
 
 async def send_led_strips_settings_overview(message: Message) -> None:
@@ -6046,34 +5985,6 @@ async def handle_warehouse_settings_led_modules(
     await send_led_modules_settings_overview(message)
 
 
-@dp.message(F.text == LED_MODULES_MANUFACTURERS_SECTION_TEXT)
-async def handle_led_module_manufacturers_section(
-    message: Message, state: FSMContext
-) -> None:
-    if not await ensure_admin_access(message, state):
-        return
-    await state.clear()
-    await send_led_module_manufacturers_overview(message)
-
-
-@dp.message(F.text == LED_MODULES_SERIES_SECTION_TEXT)
-async def handle_led_module_series_section(
-    message: Message, state: FSMContext
-) -> None:
-    if not await ensure_admin_access(message, state):
-        return
-    await state.clear()
-    await send_led_module_series_overview(message)
-
-
-@dp.message(F.text == LED_MODULES_BACK_TEXT)
-async def handle_led_module_back(message: Message, state: FSMContext) -> None:
-    if not await ensure_admin_access(message, state):
-        return
-    await state.clear()
-    await send_led_modules_settings_overview(message)
-
-
 @dp.message(F.text == WAREHOUSE_SETTINGS_ELECTRICS_POWER_SUPPLIES_TEXT)
 async def handle_warehouse_settings_power_supplies(
     message: Message, state: FSMContext
@@ -6194,7 +6105,7 @@ async def process_new_led_module_manufacturer(
     else:
         await message.answer(f"ℹ️ Производитель «{name}» уже есть в списке.")
     await state.clear()
-    await send_led_module_manufacturers_overview(message)
+    await send_led_modules_settings_overview(message)
 
 
 @dp.message(F.text == LED_MODULES_REMOVE_MANUFACTURER_TEXT)
@@ -6207,7 +6118,7 @@ async def handle_remove_led_module_manufacturer(
     if not manufacturers:
         await message.answer(
             "Список производителей пуст. Добавьте производителей перед удалением.",
-            reply_markup=WAREHOUSE_SETTINGS_LED_MODULE_MANUFACTURERS_KB,
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
         )
         await state.clear()
         return
@@ -6235,7 +6146,7 @@ async def process_remove_led_module_manufacturer(
     else:
         await message.answer(f"ℹ️ Производитель «{name}» не найден в списке.")
     await state.clear()
-    await send_led_module_manufacturers_overview(message)
+    await send_led_modules_settings_overview(message)
 
 
 @dp.message(F.text == LED_MODULES_ADD_SERIES_TEXT)
@@ -6247,7 +6158,7 @@ async def handle_add_led_module_series(message: Message, state: FSMContext) -> N
         await state.clear()
         await message.answer(
             "Сначала добавьте производителей, чтобы указывать серии.",
-            reply_markup=WAREHOUSE_SETTINGS_LED_MODULE_MANUFACTURERS_KB,
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
         )
         return
     await state.set_state(
@@ -6273,7 +6184,7 @@ async def process_choose_led_module_manufacturer_for_series(
             await state.clear()
             await message.answer(
                 "Список производителей пуст. Добавьте производителя, чтобы указать серию.",
-                reply_markup=WAREHOUSE_SETTINGS_LED_MODULE_MANUFACTURERS_KB,
+                reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
             )
             return
         await message.answer(
@@ -6309,7 +6220,7 @@ async def process_new_led_module_series(message: Message, state: FSMContext) -> 
         await message.answer(
             "⚠️ Не удалось определить производителя. Попробуйте снова."
         )
-        await send_led_module_series_overview(message)
+        await send_led_modules_settings_overview(message)
         return
     status = await insert_led_module_series(manufacturer_name, series_name)
     if status == "manufacturer_not_found":
@@ -6329,7 +6240,7 @@ async def process_new_led_module_series(message: Message, state: FSMContext) -> 
             "⚠️ Не удалось добавить серию. Попробуйте позже."
         )
     await state.clear()
-    await send_led_module_series_overview(message)
+    await send_led_modules_settings_overview(message)
 
 
 @dp.message(F.text == LED_MODULES_REMOVE_SERIES_TEXT)
@@ -6344,7 +6255,7 @@ async def handle_remove_led_module_series(message: Message, state: FSMContext) -
         await state.clear()
         await message.answer(
             "Для удаления пока нет добавленных серий.",
-            reply_markup=WAREHOUSE_SETTINGS_LED_MODULE_SERIES_KB,
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
         )
         return
     await state.set_state(
@@ -6373,7 +6284,7 @@ async def process_choose_led_module_manufacturer_for_series_deletion(
             await state.clear()
             await message.answer(
                 "Список серий пуст. Добавьте серии, чтобы их удалить.",
-                reply_markup=WAREHOUSE_SETTINGS_LED_MODULE_SERIES_KB,
+                reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
             )
             return
         await message.answer(
@@ -6391,7 +6302,7 @@ async def process_choose_led_module_manufacturer_for_series_deletion(
             await state.clear()
             await message.answer(
                 "Список серий пуст. Добавьте серии, чтобы их удалить.",
-                reply_markup=WAREHOUSE_SETTINGS_LED_MODULE_SERIES_KB,
+                reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
             )
             return
         await message.answer(
@@ -6422,7 +6333,7 @@ async def process_remove_led_module_series(message: Message, state: FSMContext) 
         await message.answer(
             "⚠️ Не удалось определить производителя. Попробуйте снова."
         )
-        await send_led_module_series_overview(message)
+        await send_led_modules_settings_overview(message)
         return
     status = await delete_led_module_series(manufacturer_name, series_name)
     if status == "manufacturer_not_found":
@@ -6438,7 +6349,7 @@ async def process_remove_led_module_series(message: Message, state: FSMContext) 
             f"ℹ️ Серия «{series_name}» не найдена у «{manufacturer_name}»."
         )
     await state.clear()
-    await send_led_module_series_overview(message)
+    await send_led_modules_settings_overview(message)
 
 
 @dp.message(F.text == POWER_SUPPLIES_ADD_MANUFACTURER_TEXT)
