@@ -639,6 +639,7 @@ WAREHOUSE_SETTINGS_ELECTRICS_TEXT = "⚡ Электрика ⚙️"
 WAREHOUSE_SETTINGS_ELECTRICS_LED_STRIPS_TEXT = "💡 Led лента ⚙️"
 WAREHOUSE_SETTINGS_ELECTRICS_LED_MODULES_TEXT = "🧩 Led модули ⚙️"
 WAREHOUSE_SETTINGS_ELECTRICS_POWER_SUPPLIES_TEXT = "🔌 Блоки питания ⚙️"
+WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT = "⬅️ Назад к электрике"
 
 WAREHOUSE_SETTINGS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -676,6 +677,7 @@ WAREHOUSE_SETTINGS_ELECTRICS_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_LED_STRIPS_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_LED_MODULES_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_POWER_SUPPLIES_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -713,7 +715,7 @@ WAREHOUSE_SETTINGS_LED_MODULES_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text=LED_MODULES_POWER_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_VOLTAGE_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_LENS_MENU_TEXT)],
-        [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -777,7 +779,7 @@ WAREHOUSE_SETTINGS_LED_STRIPS_MANUFACTURERS_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_STRIPS_ADD_MANUFACTURER_TEXT)],
         [KeyboardButton(text=LED_STRIPS_REMOVE_MANUFACTURER_TEXT)],
-        [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -786,7 +788,7 @@ WAREHOUSE_SETTINGS_POWER_SUPPLIES_MANUFACTURERS_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=POWER_SUPPLIES_ADD_MANUFACTURER_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_REMOVE_MANUFACTURER_TEXT)],
-        [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -7215,6 +7217,16 @@ async def process_remove_power_supply_manufacturer(
         await message.answer(f"ℹ️ Производитель «{name}» не найден в списке.")
     await state.clear()
     await send_power_supplies_settings_overview(message)
+
+
+@dp.message(F.text == WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)
+async def handle_back_to_electrics_settings(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_electrics_settings_overview(message)
 
 
 @dp.message(F.text == "📦 Материал")
