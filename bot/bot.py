@@ -519,10 +519,17 @@ WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+WAREHOUSE_SETTINGS_ELECTRICS_TEXT = "⚡ Электрика ⚙️"
+WAREHOUSE_SETTINGS_ELECTRICS_LED_STRIPS_TEXT = "💡 Led лента ⚙️"
+WAREHOUSE_SETTINGS_ELECTRICS_LED_MODULES_TEXT = "🧩 Led модули ⚙️"
+WAREHOUSE_SETTINGS_ELECTRICS_POWER_SUPPLIES_TEXT = "🔌 Блоки питания ⚙️"
+WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT = "⬅️ Назад к электрике"
+
 WAREHOUSE_SETTINGS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧱 Пластик")],
         [KeyboardButton(text="🎞️ Пленки ⚙️")],
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_TEXT)],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -544,6 +551,17 @@ WAREHOUSE_SETTINGS_FILM_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="🏭 Производитель")],
         [KeyboardButton(text="🎬 Серия")],
         [KeyboardButton(text="🏬 Склад")],
+        [KeyboardButton(text="⬅️ Назад к складу")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_ELECTRICS_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_LED_STRIPS_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_LED_MODULES_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_ELECTRICS_POWER_SUPPLIES_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
     resize_keyboard=True,
@@ -2747,6 +2765,14 @@ async def send_film_storage_overview(message: Message) -> None:
         f"{formatted}\n\n"
         "Используйте кнопки ниже, чтобы добавить или удалить место.",
         reply_markup=WAREHOUSE_SETTINGS_FILM_STORAGE_KB,
+    )
+
+
+async def send_electrics_settings_overview(message: Message) -> None:
+    await message.answer(
+        "⚙️ Настройки склада → Электрика.\n\n"
+        "Выберите категорию, которую хотите настроить.",
+        reply_markup=WAREHOUSE_SETTINGS_ELECTRICS_KB,
     )
 
 
@@ -5532,6 +5558,65 @@ async def handle_warehouse_settings_plastic(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
     await send_plastic_settings_overview(message)
+
+
+@dp.message(F.text == WAREHOUSE_SETTINGS_ELECTRICS_TEXT)
+async def handle_warehouse_settings_electrics(message: Message) -> None:
+    if not await ensure_admin_access(message):
+        return
+    await send_electrics_settings_overview(message)
+
+
+@dp.message(F.text == WAREHOUSE_SETTINGS_ELECTRICS_LED_STRIPS_TEXT)
+async def handle_warehouse_settings_led_strips(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led лента.\n\n"
+        "Функционал находится в разработке.",
+        reply_markup=WAREHOUSE_SETTINGS_ELECTRICS_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_SETTINGS_ELECTRICS_LED_MODULES_TEXT)
+async def handle_warehouse_settings_led_modules(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led модули.\n\n"
+        "Функционал находится в разработке.",
+        reply_markup=WAREHOUSE_SETTINGS_ELECTRICS_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_SETTINGS_ELECTRICS_POWER_SUPPLIES_TEXT)
+async def handle_warehouse_settings_power_supplies(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Блоки питания.\n\n"
+        "Функционал находится в разработке.",
+        reply_markup=WAREHOUSE_SETTINGS_ELECTRICS_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)
+async def handle_back_to_electrics_settings(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_electrics_settings_overview(message)
 
 
 @dp.message(F.text == "📦 Материал")
