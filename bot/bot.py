@@ -263,6 +263,15 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS led_module_colors (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS led_module_lens_counts (
                     id SERIAL PRIMARY KEY,
                     value INTEGER UNIQUE NOT NULL CHECK (value > 0),
@@ -457,6 +466,11 @@ class ManageLedModuleLensStates(StatesGroup):
     waiting_for_lens_count_to_delete = State()
 
 
+class ManageLedModuleColorStates(StatesGroup):
+    waiting_for_new_color_name = State()
+    waiting_for_color_name_to_delete = State()
+
+
 class ManageLedStripManufacturerStates(StatesGroup):
     waiting_for_new_manufacturer_name = State()
     waiting_for_manufacturer_name_to_delete = State()
@@ -644,6 +658,7 @@ WAREHOUSE_SETTINGS_ELECTRICS_KB = ReplyKeyboardMarkup(
 LED_MODULES_MANUFACTURERS_MENU_TEXT = "🏭 Производитель Led модулей"
 LED_MODULES_SERIES_MENU_TEXT = "🎬 Серия Led модулей"
 LED_MODULES_LENS_MENU_TEXT = "🔢 Количество линз"
+LED_MODULES_COLORS_MENU_TEXT = "🎨 Цвет модулей"
 LED_MODULES_BACK_TEXT = "⬅️ Назад к Led модулям"
 LED_MODULES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led модулей"
 LED_MODULES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led модулей"
@@ -651,6 +666,8 @@ LED_MODULES_ADD_SERIES_TEXT = "➕ Добавить серию Led модуле�
 LED_MODULES_REMOVE_SERIES_TEXT = "➖ Удалить серию Led модулей"
 LED_MODULES_ADD_LENS_COUNT_TEXT = "➕ Добавить количество линз"
 LED_MODULES_REMOVE_LENS_COUNT_TEXT = "➖ Удалить количество линз"
+LED_MODULES_ADD_COLOR_TEXT = "➕ Добавить цвет модулей"
+LED_MODULES_REMOVE_COLOR_TEXT = "➖ Удалить цвет модулей"
 LED_STRIPS_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led ленты"
 LED_STRIPS_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led ленты"
 POWER_SUPPLIES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя блоков питания"
@@ -660,6 +677,7 @@ WAREHOUSE_SETTINGS_LED_MODULES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_MODULES_MANUFACTURERS_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_SERIES_MENU_TEXT)],
+        [KeyboardButton(text=LED_MODULES_COLORS_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_LENS_MENU_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
     ],
@@ -679,6 +697,16 @@ WAREHOUSE_SETTINGS_LED_MODULES_SERIES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_MODULES_ADD_SERIES_TEXT)],
         [KeyboardButton(text=LED_MODULES_REMOVE_SERIES_TEXT)],
+        [KeyboardButton(text=LED_MODULES_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+
+WAREHOUSE_SETTINGS_LED_MODULES_COLORS_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_MODULES_ADD_COLOR_TEXT)],
+        [KeyboardButton(text=LED_MODULES_REMOVE_COLOR_TEXT)],
         [KeyboardButton(text=LED_MODULES_BACK_TEXT)],
     ],
     resize_keyboard=True,
@@ -1110,6 +1138,16 @@ async def fetch_led_module_manufacturers_with_series() -> list[dict[str, Any]]:
     return result
 
 
+async def fetch_led_module_colors() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM led_module_colors ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
 async def fetch_led_module_lens_counts() -> list[int]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -1360,6 +1398,38 @@ async def delete_led_module_manufacturer(name: str) -> bool:
     async with db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM led_module_manufacturers WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_led_module_color(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            "SELECT 1 FROM led_module_colors WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+        if existing:
+            return False
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_module_colors (name)
+            VALUES ($1)
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_led_module_color(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_module_colors WHERE LOWER(name) = LOWER($1)",
             name,
         )
     return result.endswith(" 1")
@@ -3214,7 +3284,9 @@ async def send_electrics_settings_overview(message: Message) -> None:
 async def send_led_modules_settings_overview(message: Message) -> None:
     manufacturers = await fetch_led_module_manufacturers_with_series()
     lens_counts = await fetch_led_module_lens_counts()
+    colors = await fetch_led_module_colors()
     formatted_lens_counts = format_materials_list([str(value) for value in lens_counts])
+    formatted_colors = format_materials_list(colors)
     if manufacturers:
         lines: list[str] = []
         for manufacturer in manufacturers:
@@ -3246,6 +3318,11 @@ async def send_led_modules_settings_overview(message: Message) -> None:
         f"{formatted_lens_counts}\n\n"
         "Используйте кнопку «🔢 Количество линз», чтобы управлять общим списком значений."
     )
+    text += (
+        "\n\nДоступные цвета модулей:\n"
+        f"{formatted_colors}\n\n"
+        "Используйте кнопку «🎨 Цвет модулей», чтобы управлять общим списком цветов."
+    )
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB)
 
 
@@ -3258,6 +3335,18 @@ async def send_led_module_manufacturers_menu(message: Message) -> None:
         f"{formatted}\n\n"
         "Используйте кнопки ниже, чтобы добавить или удалить производителя.",
         reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_MANUFACTURERS_KB,
+    )
+
+
+async def send_led_module_colors_menu(message: Message) -> None:
+    colors = await fetch_led_module_colors()
+    formatted = format_materials_list(colors)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led модули → Цвет модулей.\n\n"
+        "Доступные цвета:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить цвет.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_COLORS_KB,
     )
 
 
@@ -6148,6 +6237,14 @@ async def handle_led_module_manufacturers_menu(
     await send_led_module_manufacturers_menu(message)
 
 
+@dp.message(F.text == LED_MODULES_COLORS_MENU_TEXT)
+async def handle_led_module_colors_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_module_colors_menu(message)
+
+
 @dp.message(F.text == LED_MODULES_LENS_MENU_TEXT)
 async def handle_led_module_lens_menu(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
@@ -6336,6 +6433,71 @@ async def process_remove_led_module_manufacturer(
         await message.answer(f"ℹ️ Производитель «{name}» не найден в списке.")
     await state.clear()
     await send_led_modules_settings_overview(message)
+
+
+@dp.message(F.text == LED_MODULES_ADD_COLOR_TEXT)
+async def handle_add_led_module_color(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageLedModuleColorStates.waiting_for_new_color_name)
+    colors = await fetch_led_module_colors()
+    existing_text = format_materials_list(colors)
+    await message.answer(
+        "Введите цвет Led модулей.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedModuleColorStates.waiting_for_new_color_name)
+async def process_new_led_module_color(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    color_name = (message.text or "").strip()
+    if not color_name:
+        await message.answer("⚠️ Название цвета не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_led_module_color(color_name):
+        await message.answer(f"✅ Цвет «{color_name}» добавлен.")
+    else:
+        await message.answer(f"ℹ️ Цвет «{color_name}» уже есть в списке.")
+    await state.clear()
+    await send_led_module_colors_menu(message)
+
+
+@dp.message(F.text == LED_MODULES_REMOVE_COLOR_TEXT)
+async def handle_remove_led_module_color(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    colors = await fetch_led_module_colors()
+    if not colors:
+        await message.answer(
+            "Список цветов пуст. Добавьте цвета перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_COLORS_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageLedModuleColorStates.waiting_for_color_name_to_delete)
+    await message.answer(
+        "Выберите цвет, который нужно удалить:",
+        reply_markup=build_colors_keyboard(colors),
+    )
+
+
+@dp.message(ManageLedModuleColorStates.waiting_for_color_name_to_delete)
+async def process_remove_led_module_color(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    color_name = (message.text or "").strip()
+    if not color_name:
+        await message.answer("⚠️ Название цвета не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_led_module_color(color_name):
+        await message.answer(f"🗑 Цвет «{color_name}» удалён.")
+    else:
+        await message.answer(f"ℹ️ Цвет «{color_name}» не найден в списке.")
+    await state.clear()
+    await send_led_module_colors_menu(message)
 
 
 @dp.message(F.text == LED_MODULES_ADD_LENS_COUNT_TEXT)
