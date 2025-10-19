@@ -503,10 +503,13 @@ USERS_MENU_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+WAREHOUSE_ELECTRICS_TEXT = "⚡ Электрика"
+
 WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧱 Пластики")],
         [KeyboardButton(text="🎞️ Пленки")],
+        [KeyboardButton(text=WAREHOUSE_ELECTRICS_TEXT)],
         [KeyboardButton(text="⚙️ Настройки склада")],
         [KeyboardButton(text="⬅️ Главное меню")],
     ],
@@ -656,6 +659,11 @@ WAREHOUSE_PLASTICS_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text="📤 Экспорт")],
         [KeyboardButton(text="⬅️ Назад к складу")],
     ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_ELECTRICS_KB = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="⬅️ Назад к складу")]],
     resize_keyboard=True,
 )
 
@@ -3020,6 +3028,15 @@ async def handle_warehouse_films(message: Message, state: FSMContext) -> None:
     await message.answer(
         "🎞️ Раздел «Пленки». Выберите действие:",
         reply_markup=WAREHOUSE_FILMS_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_ELECTRICS_TEXT)
+async def handle_warehouse_electrics(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "⚡ Раздел «Электрика». Функционал находится в разработке.",
+        reply_markup=WAREHOUSE_ELECTRICS_KB,
     )
 
 
