@@ -138,6 +138,15 @@ async def startup():
     )
     await conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS led_module_power_options (
+            id SERIAL PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
+    await conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS led_strip_manufacturers (
             id SERIAL PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
