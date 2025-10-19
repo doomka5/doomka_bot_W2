@@ -118,6 +118,17 @@ async def startup():
     )
     await conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS led_module_series (
+            id SERIAL PRIMARY KEY,
+            manufacturer_id INTEGER NOT NULL REFERENCES led_module_manufacturers(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now()),
+            UNIQUE(manufacturer_id, name)
+        )
+        """
+    )
+    await conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS led_strip_manufacturers (
             id SERIAL PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,

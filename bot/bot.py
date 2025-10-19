@@ -252,6 +252,17 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS led_module_series (
+                    id SERIAL PRIMARY KEY,
+                    manufacturer_id INTEGER NOT NULL REFERENCES led_module_manufacturers(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now()),
+                    UNIQUE(manufacturer_id, name)
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS led_strip_manufacturers (
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -423,6 +434,13 @@ class ManageFilmStorageStates(StatesGroup):
 class ManageLedModuleManufacturerStates(StatesGroup):
     waiting_for_new_manufacturer_name = State()
     waiting_for_manufacturer_name_to_delete = State()
+
+
+class ManageLedModuleSeriesStates(StatesGroup):
+    waiting_for_manufacturer_for_new_series = State()
+    waiting_for_new_series_name = State()
+    waiting_for_manufacturer_for_series_deletion = State()
+    waiting_for_series_name_to_delete = State()
 
 
 class ManageLedStripManufacturerStates(StatesGroup):
@@ -611,15 +629,19 @@ WAREHOUSE_SETTINGS_ELECTRICS_KB = ReplyKeyboardMarkup(
 
 LED_MODULES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led модулей"
 LED_MODULES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led модулей"
+LED_MODULES_ADD_SERIES_TEXT = "➕ Добавить серию Led модулей"
+LED_MODULES_REMOVE_SERIES_TEXT = "➖ Удалить серию Led модулей"
 LED_STRIPS_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led ленты"
 LED_STRIPS_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led ленты"
 POWER_SUPPLIES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя блоков питания"
 POWER_SUPPLIES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя блоков питания"
 
-WAREHOUSE_SETTINGS_LED_MODULES_MANUFACTURERS_KB = ReplyKeyboardMarkup(
+WAREHOUSE_SETTINGS_LED_MODULES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_MODULES_ADD_MANUFACTURER_TEXT)],
         [KeyboardButton(text=LED_MODULES_REMOVE_MANUFACTURER_TEXT)],
+        [KeyboardButton(text=LED_MODULES_ADD_SERIES_TEXT)],
+        [KeyboardButton(text=LED_MODULES_REMOVE_SERIES_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
@@ -994,6 +1016,75 @@ async def fetch_power_supply_manufacturers() -> list[str]:
     return [row["name"] for row in rows]
 
 
+async def get_led_module_manufacturer_by_name(
+    name: str,
+) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, name
+            FROM led_module_manufacturers
+            WHERE LOWER(name) = LOWER($1)
+            """,
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "name": row["name"]}
+
+
+async def fetch_led_module_manufacturers_with_series() -> list[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        manufacturers_rows = await conn.fetch(
+            "SELECT id, name FROM led_module_manufacturers ORDER BY LOWER(name)"
+        )
+        series_rows = await conn.fetch(
+            """
+            SELECT manufacturer_id, name
+            FROM led_module_series
+            ORDER BY manufacturer_id, LOWER(name)
+            """
+        )
+    series_map: dict[int, list[str]] = {}
+    for row in series_rows:
+        series_map.setdefault(row["manufacturer_id"], []).append(row["name"])
+    result: list[dict[str, Any]] = []
+    for row in manufacturers_rows:
+        result.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "series": series_map.get(row["id"], []),
+            }
+        )
+    return result
+
+
+async def fetch_led_module_series_by_manufacturer(
+    manufacturer_name: str,
+) -> list[str]:
+    manufacturer = await get_led_module_manufacturer_by_name(manufacturer_name)
+    if manufacturer is None:
+        return []
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT name
+            FROM led_module_series
+            WHERE manufacturer_id = $1
+            ORDER BY LOWER(name)
+            """,
+            manufacturer["id"],
+        )
+    return [row["name"] for row in rows]
+
+
 async def fetch_film_storage_locations() -> list[str]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -1216,6 +1307,73 @@ async def delete_led_module_manufacturer(name: str) -> bool:
             name,
         )
     return result.endswith(" 1")
+
+
+async def insert_led_module_series(
+    manufacturer_name: str, series_name: str
+) -> str:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        manufacturer_row = await conn.fetchrow(
+            """
+            SELECT id, name
+            FROM led_module_manufacturers
+            WHERE LOWER(name) = LOWER($1)
+            """,
+            manufacturer_name,
+        )
+        if manufacturer_row is None:
+            return "manufacturer_not_found"
+        manufacturer_id = manufacturer_row["id"]
+        existing_id = await conn.fetchval(
+            """
+            SELECT id
+            FROM led_module_series
+            WHERE manufacturer_id = $1 AND LOWER(name) = LOWER($2)
+            """,
+            manufacturer_id,
+            series_name,
+        )
+        if existing_id:
+            return "already_exists"
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_module_series (manufacturer_id, name)
+            VALUES ($1, $2)
+            RETURNING id
+            """,
+            manufacturer_id,
+            series_name,
+        )
+    return "inserted" if row else "error"
+
+
+async def delete_led_module_series(
+    manufacturer_name: str, series_name: str
+) -> str:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        manufacturer_row = await conn.fetchrow(
+            """
+            SELECT id
+            FROM led_module_manufacturers
+            WHERE LOWER(name) = LOWER($1)
+            """,
+            manufacturer_name,
+        )
+        if manufacturer_row is None:
+            return "manufacturer_not_found"
+        result = await conn.execute(
+            """
+            DELETE FROM led_module_series
+            WHERE manufacturer_id = $1 AND LOWER(name) = LOWER($2)
+            """,
+            manufacturer_row["id"],
+            series_name,
+        )
+    return "deleted" if result.endswith(" 1") else "not_found"
 
 
 async def insert_led_strip_manufacturer(name: str) -> bool:
@@ -2963,15 +3121,33 @@ async def send_electrics_settings_overview(message: Message) -> None:
     )
 
 async def send_led_modules_settings_overview(message: Message) -> None:
-    manufacturers = await fetch_led_module_manufacturers()
-    formatted = format_materials_list(manufacturers)
-    await message.answer(
-        "⚙️ Настройки склада → Электрика → Led модули.\n\n"
-        "Доступные производители:\n"
-        f"{formatted}\n\n"
-        "Используйте кнопки ниже, чтобы добавить или удалить производителя.",
-        reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_MANUFACTURERS_KB,
-    )
+    manufacturers = await fetch_led_module_manufacturers_with_series()
+    if manufacturers:
+        lines: list[str] = []
+        for manufacturer in manufacturers:
+            name = manufacturer["name"]
+            formatted_series = format_series_list(manufacturer.get("series") or [])
+            lines.append(
+                "\n".join(
+                    [
+                        f"• {name}",
+                        f"   Серии: {formatted_series}",
+                    ]
+                )
+            )
+        formatted = "\n".join(lines)
+        text = (
+            "⚙️ Настройки склада → Электрика → Led модули.\n\n"
+            "Доступные производители и серии:\n"
+            f"{formatted}\n\n"
+            "Используйте кнопки ниже, чтобы управлять производителями и сериями."
+        )
+    else:
+        text = (
+            "⚙️ Настройки склада → Электрика → Led модули.\n\n"
+            "Сначала добавьте производителей, чтобы указать серии."
+        )
+    await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB)
 
 
 async def send_led_strips_settings_overview(message: Message) -> None:
@@ -5942,7 +6118,7 @@ async def handle_remove_led_module_manufacturer(
     if not manufacturers:
         await message.answer(
             "Список производителей пуст. Добавьте производителей перед удалением.",
-            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_MANUFACTURERS_KB,
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
         )
         await state.clear()
         return
@@ -5969,6 +6145,209 @@ async def process_remove_led_module_manufacturer(
         await message.answer(f"🗑 Производитель «{name}» удалён.")
     else:
         await message.answer(f"ℹ️ Производитель «{name}» не найден в списке.")
+    await state.clear()
+    await send_led_modules_settings_overview(message)
+
+
+@dp.message(F.text == LED_MODULES_ADD_SERIES_TEXT)
+async def handle_add_led_module_series(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    manufacturers = await fetch_led_module_manufacturers()
+    if not manufacturers:
+        await state.clear()
+        await message.answer(
+            "Сначала добавьте производителей, чтобы указывать серии.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    await state.set_state(
+        ManageLedModuleSeriesStates.waiting_for_manufacturer_for_new_series
+    )
+    await message.answer(
+        "Выберите производителя, для которого нужно добавить серию:",
+        reply_markup=build_manufacturers_keyboard(manufacturers),
+    )
+
+
+@dp.message(ManageLedModuleSeriesStates.waiting_for_manufacturer_for_new_series)
+async def process_choose_led_module_manufacturer_for_series(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    manufacturer_name = (message.text or "").strip()
+    manufacturer = await get_led_module_manufacturer_by_name(manufacturer_name)
+    if manufacturer is None:
+        manufacturers = await fetch_led_module_manufacturers()
+        if not manufacturers:
+            await state.clear()
+            await message.answer(
+                "Список производителей пуст. Добавьте производителя, чтобы указать серию.",
+                reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Производитель не найден. Выберите из списка.",
+            reply_markup=build_manufacturers_keyboard(manufacturers),
+        )
+        return
+    existing_series = await fetch_led_module_series_by_manufacturer(
+        manufacturer["name"]
+    )
+    formatted_series = format_series_list(existing_series)
+    await state.update_data(selected_manufacturer=manufacturer["name"])
+    await state.set_state(ManageLedModuleSeriesStates.waiting_for_new_series_name)
+    await message.answer(
+        "Введите название новой серии.\n\n"
+        f"Уже добавлены:\n{formatted_series}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedModuleSeriesStates.waiting_for_new_series_name)
+async def process_new_led_module_series(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    series_name = (message.text or "").strip()
+    if not series_name:
+        await message.answer("⚠️ Название серии не может быть пустым. Попробуйте снова.")
+        return
+    data = await state.get_data()
+    manufacturer_name = data.get("selected_manufacturer")
+    if not manufacturer_name:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось определить производителя. Попробуйте снова."
+        )
+        await send_led_modules_settings_overview(message)
+        return
+    status = await insert_led_module_series(manufacturer_name, series_name)
+    if status == "manufacturer_not_found":
+        await message.answer(
+            "ℹ️ Производитель больше не существует. Обновите список и попробуйте снова."
+        )
+    elif status == "already_exists":
+        await message.answer(
+            f"ℹ️ Серия «{series_name}» уже указана для «{manufacturer_name}»."
+        )
+    elif status == "inserted":
+        await message.answer(
+            f"✅ Серия «{series_name}» добавлена для «{manufacturer_name}»."
+        )
+    else:
+        await message.answer(
+            "⚠️ Не удалось добавить серию. Попробуйте позже."
+        )
+    await state.clear()
+    await send_led_modules_settings_overview(message)
+
+
+@dp.message(F.text == LED_MODULES_REMOVE_SERIES_TEXT)
+async def handle_remove_led_module_series(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    manufacturers = await fetch_led_module_manufacturers_with_series()
+    manufacturers_with_series = [
+        item["name"] for item in manufacturers if item.get("series")
+    ]
+    if not manufacturers_with_series:
+        await state.clear()
+        await message.answer(
+            "Для удаления пока нет добавленных серий.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    await state.set_state(
+        ManageLedModuleSeriesStates.waiting_for_manufacturer_for_series_deletion
+    )
+    await message.answer(
+        "Выберите производителя, у которого нужно удалить серию:",
+        reply_markup=build_manufacturers_keyboard(manufacturers_with_series),
+    )
+
+
+@dp.message(ManageLedModuleSeriesStates.waiting_for_manufacturer_for_series_deletion)
+async def process_choose_led_module_manufacturer_for_series_deletion(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    manufacturer_name = (message.text or "").strip()
+    manufacturer = await get_led_module_manufacturer_by_name(manufacturer_name)
+    if manufacturer is None:
+        manufacturers = await fetch_led_module_manufacturers_with_series()
+        manufacturers_with_series = [
+            item["name"] for item in manufacturers if item.get("series")
+        ]
+        if not manufacturers_with_series:
+            await state.clear()
+            await message.answer(
+                "Список серий пуст. Добавьте серии, чтобы их удалить.",
+                reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Производитель не найден. Выберите из списка.",
+            reply_markup=build_manufacturers_keyboard(manufacturers_with_series),
+        )
+        return
+    series = await fetch_led_module_series_by_manufacturer(manufacturer["name"])
+    if not series:
+        manufacturers = await fetch_led_module_manufacturers_with_series()
+        manufacturers_with_series = [
+            item["name"] for item in manufacturers if item.get("series")
+        ]
+        if not manufacturers_with_series:
+            await state.clear()
+            await message.answer(
+                "Список серий пуст. Добавьте серии, чтобы их удалить.",
+                reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+            )
+            return
+        await message.answer(
+            "ℹ️ У выбранного производителя нет серий. Выберите другого производителя.",
+            reply_markup=build_manufacturers_keyboard(manufacturers_with_series),
+        )
+        return
+    await state.update_data(selected_manufacturer=manufacturer["name"])
+    await state.set_state(ManageLedModuleSeriesStates.waiting_for_series_name_to_delete)
+    await message.answer(
+        f"Выберите серию для удаления у «{manufacturer['name']}»:",
+        reply_markup=build_series_keyboard(series),
+    )
+
+
+@dp.message(ManageLedModuleSeriesStates.waiting_for_series_name_to_delete)
+async def process_remove_led_module_series(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    series_name = (message.text or "").strip()
+    if not series_name:
+        await message.answer("⚠️ Название серии не может быть пустым. Попробуйте снова.")
+        return
+    data = await state.get_data()
+    manufacturer_name = data.get("selected_manufacturer")
+    if not manufacturer_name:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось определить производителя. Попробуйте снова."
+        )
+        await send_led_modules_settings_overview(message)
+        return
+    status = await delete_led_module_series(manufacturer_name, series_name)
+    if status == "manufacturer_not_found":
+        await message.answer(
+            "ℹ️ Производитель больше не существует. Обновите список и попробуйте снова."
+        )
+    elif status == "deleted":
+        await message.answer(
+            f"🗑 Серия «{series_name}» удалена у «{manufacturer_name}»."
+        )
+    else:
+        await message.answer(
+            f"ℹ️ Серия «{series_name}» не найдена у «{manufacturer_name}»."
+        )
     await state.clear()
     await send_led_modules_settings_overview(message)
 
@@ -6680,6 +7059,12 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
         return
     if current_state and current_state.startswith(
         ManageLedModuleManufacturerStates.__name__
+    ):
+        await state.clear()
+        await send_led_modules_settings_overview(message)
+        return
+    if current_state and current_state.startswith(
+        ManageLedModuleSeriesStates.__name__
     ):
         await state.clear()
         await send_led_modules_settings_overview(message)
