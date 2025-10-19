@@ -109,6 +109,33 @@ async def startup():
     )
     await conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS led_module_manufacturers (
+            id SERIAL PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS led_strip_manufacturers (
+            id SERIAL PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS power_supply_manufacturers (
+            id SERIAL PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
+    await conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS film_series (
             id SERIAL PRIMARY KEY,
             manufacturer_id INTEGER NOT NULL REFERENCES film_manufacturers(id) ON DELETE CASCADE,
