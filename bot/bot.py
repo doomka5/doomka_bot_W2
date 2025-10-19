@@ -280,6 +280,36 @@ async def init_database() -> None:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS written_off_films (
+                    id SERIAL PRIMARY KEY,
+                    source_id INTEGER,
+                    article TEXT NOT NULL,
+                    manufacturer TEXT,
+                    series TEXT,
+                    color_code TEXT,
+                    color TEXT,
+                    width NUMERIC(10, 2),
+                    length NUMERIC(10, 2),
+                    warehouse TEXT,
+                    comment TEXT,
+                    employee_id BIGINT,
+                    employee_nick TEXT,
+                    recorded_at TIMESTAMPTZ,
+                    project TEXT,
+                    written_off_by_id BIGINT,
+                    written_off_by_name TEXT,
+                    written_off_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                ALTER TABLE written_off_films
+                ADD COLUMN IF NOT EXISTS written_off_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                """
+            )
             # Добавляем администратора
             await conn.execute(
                 """
@@ -383,6 +413,11 @@ class CommentWarehouseFilmStates(StatesGroup):
 class MoveWarehouseFilmStates(StatesGroup):
     waiting_for_article = State()
     waiting_for_new_location = State()
+
+
+class WriteOffWarehouseFilmStates(StatesGroup):
+    waiting_for_article = State()
+    waiting_for_project = State()
 
 
 class SearchWarehouseFilmStates(StatesGroup):
@@ -736,6 +771,11 @@ async def _cancel_move_film_flow(message: Message, state: FSMContext) -> None:
     await message.answer(
         "❌ Перемещение пленки отменено.", reply_markup=WAREHOUSE_FILMS_KB
     )
+
+
+async def _cancel_write_off_film_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("❌ Списание пленки отменено.", reply_markup=WAREHOUSE_FILMS_KB)
 
 
 # === Работа с БД ===
@@ -1551,6 +1591,107 @@ async def fetch_warehouse_film_by_article(article: str) -> Optional[Dict[str, An
     return dict(row)
 
 
+async def write_off_warehouse_film(
+    record_id: int,
+    project: str,
+    written_off_by_id: Optional[int],
+    written_off_by_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    now_warsaw = datetime.now(WARSAW_TZ)
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            original_row = await conn.fetchrow(
+                """
+                DELETE FROM warehouse_films
+                WHERE id = $1
+                RETURNING
+                    id,
+                    article,
+                    manufacturer,
+                    series,
+                    color_code,
+                    color,
+                    width,
+                    length,
+                    warehouse,
+                    comment,
+                    employee_id,
+                    employee_nick,
+                    recorded_at
+                """,
+                record_id,
+            )
+            if original_row is None:
+                return None
+            inserted_row = await conn.fetchrow(
+                """
+                INSERT INTO written_off_films (
+                    source_id,
+                    article,
+                    manufacturer,
+                    series,
+                    color_code,
+                    color,
+                    width,
+                    length,
+                    warehouse,
+                    comment,
+                    employee_id,
+                    employee_nick,
+                    recorded_at,
+                    project,
+                    written_off_by_id,
+                    written_off_by_name,
+                    written_off_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                )
+                RETURNING
+                    id,
+                    source_id,
+                    article,
+                    manufacturer,
+                    series,
+                    color_code,
+                    color,
+                    width,
+                    length,
+                    warehouse,
+                    comment,
+                    employee_id,
+                    employee_nick,
+                    recorded_at,
+                    project,
+                    written_off_by_id,
+                    written_off_by_name,
+                    written_off_at
+                """,
+                original_row["id"],
+                original_row["article"],
+                original_row["manufacturer"],
+                original_row["series"],
+                original_row["color_code"],
+                original_row["color"],
+                original_row["width"],
+                original_row["length"],
+                original_row["warehouse"],
+                original_row["comment"],
+                original_row["employee_id"],
+                original_row["employee_nick"],
+                original_row["recorded_at"],
+                project,
+                written_off_by_id,
+                written_off_by_name,
+                now_warsaw,
+            )
+    if inserted_row is None:
+        return None
+    return dict(inserted_row)
+
+
 async def fetch_warehouse_film_by_id(record_id: int) -> Optional[Dict[str, Any]]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -2199,6 +2340,30 @@ def format_film_records_list_for_message(records: list[Dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+def format_written_off_film_record(record: Dict[str, Any]) -> str:
+    base_info = format_film_record_for_message(record)
+    project = record.get("project") or "—"
+    written_off_at = record.get("written_off_at")
+    if written_off_at:
+        try:
+            written_off_local = written_off_at.astimezone(WARSAW_TZ)
+        except Exception:
+            written_off_local = written_off_at
+        written_off_text = written_off_local.strftime("%Y-%m-%d %H:%M")
+    else:
+        written_off_text = "—"
+    written_off_by_name = record.get("written_off_by_name") or "—"
+    written_off_by_id = record.get("written_off_by_id")
+    written_off_by_id_text = "—" if written_off_by_id is None else str(written_off_by_id)
+    return (
+        f"{base_info}\n"
+        f"Проект: {project}\n"
+        f"Списал: {written_off_by_name}\n"
+        f"ID списавшего: {written_off_by_id_text}\n"
+        f"Списано: {written_off_text}"
+    )
+
+
 def format_written_off_plastic_record(record: Dict[str, Any]) -> str:
     base_info = format_plastic_record_for_message(record)
     project = record.get("project") or "—"
@@ -2813,7 +2978,94 @@ async def handle_add_warehouse_film(message: Message, state: FSMContext) -> None
 @dp.message(F.text == WAREHOUSE_FILMS_WRITE_OFF_TEXT)
 async def handle_write_off_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await _reply_films_feature_in_development(message, "Списание пленки")
+    await state.set_state(WriteOffWarehouseFilmStates.waiting_for_article)
+    await message.answer(
+        "Введите номер артикула, чтобы списать пленку со склада.",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(WriteOffWarehouseFilmStates.waiting_for_article)
+async def process_write_off_film_article(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_write_off_film_flow(message, state)
+        return
+    article = (message.text or "").strip()
+    if not article.isdigit():
+        await message.answer(
+            "⚠️ Артикул должен содержать только цифры. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    record = await fetch_warehouse_film_by_article(article)
+    if record is None:
+        await message.answer(
+            "ℹ️ Пленка с таким артикулом не найдена. Попробуйте другой артикул.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(film_id=record["id"], article=record.get("article"))
+    formatted = format_film_record_for_message(record)
+    await state.set_state(WriteOffWarehouseFilmStates.waiting_for_project)
+    await message.answer(
+        "Найдена запись:\n\n"
+        f"{formatted}\n\n"
+        "Укажите проект, на который выполняется списание.",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(WriteOffWarehouseFilmStates.waiting_for_project)
+async def process_write_off_film_project(message: Message, state: FSMContext) -> None:
+    if (message.text or "").strip() == CANCEL_TEXT:
+        await _cancel_write_off_film_flow(message, state)
+        return
+    project = (message.text or "").strip()
+    if not project:
+        await message.answer(
+            "⚠️ Название проекта не может быть пустым. Укажите проект.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    data = await state.get_data()
+    record_id = data.get("film_id")
+    article = data.get("article")
+    if record_id is None or article is None:
+        await _cancel_write_off_film_flow(message, state)
+        return
+    written_off_by_id = message.from_user.id if message.from_user else None
+    written_off_by_name = message.from_user.full_name if message.from_user else None
+    try:
+        result = await write_off_warehouse_film(
+            record_id=record_id,
+            project=project,
+            written_off_by_id=written_off_by_id,
+            written_off_by_name=written_off_by_name,
+        )
+    except Exception:
+        logging.exception("Failed to write off film record")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось списать пленку. Попробуйте позже.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    if result is None:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Не удалось найти запись для списания. Возможно, она уже была изменена.",
+            reply_markup=WAREHOUSE_FILMS_KB,
+        )
+        return
+    await state.clear()
+    formatted = format_written_off_film_record(result)
+    await message.answer(
+        "✅ Пленка списана со склада.\n\n"
+        f"Артикул: {article}\n"
+        f"Проект: {project}\n\n"
+        f"Данные списанной записи:\n{formatted}",
+        reply_markup=WAREHOUSE_FILMS_KB,
+    )
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_COMMENT_TEXT)
