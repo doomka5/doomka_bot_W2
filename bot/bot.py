@@ -627,8 +627,8 @@ WAREHOUSE_SETTINGS_ELECTRICS_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-LED_MODULES_MANUFACTURERS_MENU_TEXT = "🏭 Производитель​"
-LED_MODULES_SERIES_MENU_TEXT = "🎬 Серия​"
+LED_MODULES_MANUFACTURERS_MENU_TEXT = "🏭 Производитель Led модулей"
+LED_MODULES_SERIES_MENU_TEXT = "🎬 Серия Led модулей"
 LED_MODULES_BACK_TEXT = "⬅️ Назад к Led модулям"
 LED_MODULES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led модулей"
 LED_MODULES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led модулей"
@@ -3159,7 +3159,7 @@ async def send_led_modules_settings_overview(message: Message) -> None:
             "⚙️ Настройки склада → Электрика → Led модули.\n\n"
             "Доступные производители и серии:\n"
             f"{formatted}\n\n"
-            "Используйте кнопки «🏭 Производитель» и «🎬 Серия», чтобы управлять списками."
+            "Используйте кнопки «🏭 Производитель Led модулей» и «🎬 Серия Led модулей», чтобы управлять списками."
         )
     else:
         text = (
