@@ -623,6 +623,9 @@ WAREHOUSE_ELECTRICS_TEXT = "⚡ Электрика"
 WAREHOUSE_ELECTRICS_LED_STRIPS_TEXT = "💡 Led лента"
 WAREHOUSE_ELECTRICS_LED_MODULES_TEXT = "🧩 Led модули"
 WAREHOUSE_ELECTRICS_POWER_SUPPLIES_TEXT = "🔌 Блоки питания"
+WAREHOUSE_LED_MODULES_ADD_TEXT = "➕ Добавить Led модули"
+WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT = "➖ Списать Led модули"
+WAREHOUSE_LED_MODULES_BACK_TO_ELECTRICS_TEXT = "⬅️ Назад к разделу «Электрика»"
 
 WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -915,6 +918,15 @@ WAREHOUSE_ELECTRICS_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text=WAREHOUSE_ELECTRICS_LED_MODULES_TEXT)],
         [KeyboardButton(text=WAREHOUSE_ELECTRICS_POWER_SUPPLIES_TEXT)],
         [KeyboardButton(text="⬅️ Назад к складу")],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_LED_MODULES_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=WAREHOUSE_LED_MODULES_ADD_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_LED_MODULES_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -3891,7 +3903,7 @@ async def handle_warehouse_films(message: Message, state: FSMContext) -> None:
 async def handle_warehouse_electrics(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
-        "⚡ Раздел «Электрика». Функционал находится в разработке.",
+        "⚡ Раздел «Электрика». Выберите категорию:",
         reply_markup=WAREHOUSE_ELECTRICS_KB,
     )
 
@@ -3913,7 +3925,38 @@ async def handle_warehouse_electrics_led_modules(
 ) -> None:
     await state.clear()
     await message.answer(
-        "🧩 Раздел «Led модули». Функционал находится в разработке.",
+        "🧩 Раздел «Led модули». Выберите действие:",
+        reply_markup=WAREHOUSE_LED_MODULES_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_LED_MODULES_ADD_TEXT)
+async def handle_add_warehouse_led_modules(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "➕ Добавление Led модулей находится в разработке.",
+        reply_markup=WAREHOUSE_LED_MODULES_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT)
+async def handle_write_off_warehouse_led_modules(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "➖ Списание Led модулей находится в разработке.",
+        reply_markup=WAREHOUSE_LED_MODULES_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_LED_MODULES_BACK_TO_ELECTRICS_TEXT)
+async def handle_back_to_electrics_from_led_modules(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "⚡ Раздел «Электрика». Выберите категорию:",
         reply_markup=WAREHOUSE_ELECTRICS_KB,
     )
 
