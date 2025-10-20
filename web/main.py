@@ -127,14 +127,6 @@ async def startup():
     )
     await conn.execute(
         """
-        INSERT INTO led_module_storage_locations (name)
-        VALUES ($1)
-        ON CONFLICT (name) DO NOTHING
-        """,
-        "Led модули baza",
-    )
-    await conn.execute(
-        """
         CREATE TABLE IF NOT EXISTS led_module_series (
             id SERIAL PRIMARY KEY,
             manufacturer_id INTEGER NOT NULL REFERENCES led_module_manufacturers(id) ON DELETE CASCADE,
