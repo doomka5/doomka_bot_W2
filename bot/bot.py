@@ -308,6 +308,21 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS generated_led_modules (
+                    id SERIAL PRIMARY KEY,
+                    article TEXT UNIQUE NOT NULL,
+                    manufacturer_id INTEGER NOT NULL REFERENCES led_module_manufacturers(id) ON DELETE RESTRICT,
+                    series_id INTEGER NOT NULL REFERENCES led_module_series(id) ON DELETE RESTRICT,
+                    color_id INTEGER NOT NULL REFERENCES led_module_colors(id) ON DELETE RESTRICT,
+                    lens_count_id INTEGER NOT NULL REFERENCES led_module_lens_counts(id) ON DELETE RESTRICT,
+                    power_option_id INTEGER NOT NULL REFERENCES led_module_power_options(id) ON DELETE RESTRICT,
+                    voltage_option_id INTEGER NOT NULL REFERENCES led_module_voltage_options(id) ON DELETE RESTRICT,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS led_strip_manufacturers (
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -511,6 +526,16 @@ class ManageLedModulePowerStates(StatesGroup):
 class ManageLedModuleVoltageStates(StatesGroup):
     waiting_for_new_voltage_value = State()
     waiting_for_voltage_value_to_delete = State()
+
+
+class GenerateLedModuleStates(StatesGroup):
+    waiting_for_article = State()
+    waiting_for_manufacturer = State()
+    waiting_for_series = State()
+    waiting_for_color = State()
+    waiting_for_lens_count = State()
+    waiting_for_power = State()
+    waiting_for_voltage = State()
 
 
 class ManageLedStripManufacturerStates(StatesGroup):
@@ -1091,6 +1116,14 @@ async def _cancel_write_off_film_flow(message: Message, state: FSMContext) -> No
     await message.answer("❌ Списание пленки отменено.", reply_markup=WAREHOUSE_FILMS_KB)
 
 
+async def _cancel_generate_led_module_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Генерация Led модуля отменена.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
+    )
+
+
 # === Работа с БД ===
 async def upsert_user_in_db(
     tg_id: int,
@@ -1314,6 +1347,138 @@ async def fetch_led_module_series_by_manufacturer(
             manufacturer["id"],
         )
     return [row["name"] for row in rows]
+
+
+async def get_led_module_series_by_name(
+    manufacturer_id: int, name: str
+) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, manufacturer_id, name
+            FROM led_module_series
+            WHERE manufacturer_id = $1 AND LOWER(name) = LOWER($2)
+            """,
+            manufacturer_id,
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "manufacturer_id": row["manufacturer_id"], "name": row["name"]}
+
+
+async def get_led_module_color_by_name(name: str) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name FROM led_module_colors WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "name": row["name"]}
+
+
+async def get_led_module_power_option_by_name(name: str) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name FROM led_module_power_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "name": row["name"]}
+
+
+async def get_led_module_voltage_option_by_name(name: str) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name FROM led_module_voltage_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "name": row["name"]}
+
+
+async def get_led_module_lens_count_by_value(value: int) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, value FROM led_module_lens_counts WHERE value = $1",
+            value,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "value": row["value"]}
+
+
+async def get_generated_led_module_by_article(article: str) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, article, manufacturer_id, series_id, color_id,
+                   lens_count_id, power_option_id, voltage_option_id, created_at
+            FROM generated_led_modules
+            WHERE LOWER(article) = LOWER($1)
+            """,
+            article,
+        )
+    if row is None:
+        return None
+    return dict(row)
+
+
+async def insert_generated_led_module(
+    *,
+    article: str,
+    manufacturer_id: int,
+    series_id: int,
+    color_id: int,
+    lens_count_id: int,
+    power_option_id: int,
+    voltage_option_id: int,
+) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO generated_led_modules (
+                article,
+                manufacturer_id,
+                series_id,
+                color_id,
+                lens_count_id,
+                power_option_id,
+                voltage_option_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (article) DO NOTHING
+            RETURNING id, article, manufacturer_id, series_id, color_id,
+                      lens_count_id, power_option_id, voltage_option_id, created_at
+            """,
+            article,
+            manufacturer_id,
+            series_id,
+            color_id,
+            lens_count_id,
+            power_option_id,
+            voltage_option_id,
+        )
+    if row is None:
+        return None
+    return dict(row)
 
 
 async def fetch_film_storage_locations() -> list[str]:
@@ -6633,8 +6798,393 @@ async def handle_generate_led_module(message: Message, state: FSMContext) -> Non
     if not await ensure_admin_access(message, state):
         return
     await state.clear()
+    manufacturers_with_series = [
+        item
+        for item in await fetch_led_module_manufacturers_with_series()
+        if item.get("series")
+    ]
+    colors = await fetch_led_module_colors()
+    lens_counts = await fetch_led_module_lens_counts()
+    power_options = await fetch_led_module_power_options()
+    voltage_options = await fetch_led_module_voltage_options()
+    missing: list[str] = []
+    if not manufacturers_with_series:
+        missing.append("• производители и серии")
+    if not colors:
+        missing.append("• цвета модулей")
+    if not lens_counts:
+        missing.append("• значения количества линз")
+    if not power_options:
+        missing.append("• значения мощности")
+    if not voltage_options:
+        missing.append("• значения напряжения")
+    if missing:
+        details = "\n".join(missing)
+        await message.answer(
+            "⚠️ Невозможно начать генерацию Led модуля.\n\n"
+            "Заполните следующие справочники в настройках:\n"
+            f"{details}",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    await state.set_state(GenerateLedModuleStates.waiting_for_article)
     await message.answer(
-        "🛠️ Сервис генерации Led модуля находится в разработке.",
+        "Введите артикул для нового Led модуля.",
+        reply_markup=build_article_input_keyboard(),
+    )
+
+
+@dp.message(GenerateLedModuleStates.waiting_for_article)
+async def process_generate_led_module_article(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    article = (message.text or "").strip()
+    if not article:
+        await message.answer(
+            "⚠️ Артикул не может быть пустым. Попробуйте снова.",
+            reply_markup=build_article_input_keyboard(),
+        )
+        return
+    existing = await get_generated_led_module_by_article(article)
+    if existing:
+        await message.answer(
+            f"⚠️ Артикул «{article}» уже существует. Укажите другой.",
+            reply_markup=build_article_input_keyboard(),
+        )
+        return
+    manufacturers_with_series = [
+        item
+        for item in await fetch_led_module_manufacturers_with_series()
+        if item.get("series")
+    ]
+    if not manufacturers_with_series:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Список производителей с сериями пуст. Добавьте данные в настройках Led модулей.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    manufacturer_names = [item["name"] for item in manufacturers_with_series]
+    await state.update_data(generated_led_module_article=article)
+    await state.set_state(GenerateLedModuleStates.waiting_for_manufacturer)
+    await message.answer(
+        "Выберите производителя Led модуля.\n\n"
+        "Доступные варианты:\n"
+        f"{format_materials_list(manufacturer_names)}",
+        reply_markup=build_manufacturers_keyboard(manufacturer_names),
+    )
+
+
+@dp.message(GenerateLedModuleStates.waiting_for_manufacturer)
+async def process_generate_led_module_manufacturer(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    manufacturers_with_series = [
+        item
+        for item in await fetch_led_module_manufacturers_with_series()
+        if item.get("series")
+    ]
+    if not manufacturers_with_series:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Список производителей с сериями пуст. Добавьте данные в настройках Led модулей.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    manufacturer_names = [item["name"] for item in manufacturers_with_series]
+    raw = (message.text or "").strip()
+    match = next(
+        (item for item in manufacturers_with_series if item["name"].lower() == raw.lower()),
+        None,
+    )
+    if match is None:
+        await message.answer(
+            "⚠️ Производитель не найден. Выберите вариант из списка.",
+            reply_markup=build_manufacturers_keyboard(manufacturer_names),
+        )
+        return
+    series_names = await fetch_led_module_series_by_manufacturer(match["name"])
+    if not series_names:
+        await message.answer(
+            "ℹ️ У выбранного производителя пока нет серий. Выберите другого производителя или добавьте серию в настройках.",
+            reply_markup=build_manufacturers_keyboard(manufacturer_names),
+        )
+        return
+    await state.update_data(
+        generated_led_module_manufacturer={"id": match["id"], "name": match["name"]}
+    )
+    await state.set_state(GenerateLedModuleStates.waiting_for_series)
+    await message.answer(
+        f"Выберите серию для производителя «{match['name']}».\n\n"
+        "Доступные серии:\n"
+        f"{format_materials_list(series_names)}",
+        reply_markup=build_series_keyboard(series_names),
+    )
+
+
+@dp.message(GenerateLedModuleStates.waiting_for_series)
+async def process_generate_led_module_series(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    data = await state.get_data()
+    manufacturer: Optional[dict[str, Any]] = data.get("generated_led_module_manufacturer")
+    if not manufacturer:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось определить выбранного производителя. Начните генерацию заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
+        )
+        return
+    series_names = await fetch_led_module_series_by_manufacturer(manufacturer["name"])
+    if not series_names:
+        await state.clear()
+        await message.answer(
+            "ℹ️ У производителя больше нет серий. Добавьте серию и начните снова.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    raw = (message.text or "").strip()
+    series_name = next((item for item in series_names if item.lower() == raw.lower()), None)
+    if series_name is None:
+        await message.answer(
+            "⚠️ Серия не найдена. Выберите значение из списка.",
+            reply_markup=build_series_keyboard(series_names),
+        )
+        return
+    series = await get_led_module_series_by_name(manufacturer["id"], series_name)
+    if series is None:
+        await message.answer(
+            "⚠️ Не удалось подтвердить выбранную серию. Попробуйте снова.",
+            reply_markup=build_series_keyboard(series_names),
+        )
+        return
+    await state.update_data(generated_led_module_series=series)
+    colors = await fetch_led_module_colors()
+    if not colors:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник цветов пуст. Добавьте цвета и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    await state.set_state(GenerateLedModuleStates.waiting_for_color)
+    await message.answer(
+        "Выберите цвет Led модуля.\n\n"
+        "Доступные цвета:\n"
+        f"{format_materials_list(colors)}",
+        reply_markup=build_colors_keyboard(colors),
+    )
+
+
+@dp.message(GenerateLedModuleStates.waiting_for_color)
+async def process_generate_led_module_color(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    colors = await fetch_led_module_colors()
+    if not colors:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник цветов пуст. Добавьте цвета и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    raw = (message.text or "").strip()
+    color_name = next((item for item in colors if item.lower() == raw.lower()), None)
+    if color_name is None:
+        await message.answer(
+            "⚠️ Цвет не найден. Выберите значение из списка.",
+            reply_markup=build_colors_keyboard(colors),
+        )
+        return
+    color = await get_led_module_color_by_name(color_name)
+    if color is None:
+        await message.answer(
+            "⚠️ Не удалось подтвердить выбранный цвет. Попробуйте снова.",
+            reply_markup=build_colors_keyboard(colors),
+        )
+        return
+    await state.update_data(generated_led_module_color=color)
+    lens_counts = await fetch_led_module_lens_counts()
+    if not lens_counts:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник количества линз пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    await state.set_state(GenerateLedModuleStates.waiting_for_lens_count)
+    await message.answer(
+        "Выберите количество линз для Led модуля.\n\n"
+        "Доступные варианты:\n"
+        f"{format_materials_list([str(value) for value in lens_counts])}",
+        reply_markup=build_lens_counts_keyboard(lens_counts),
+    )
+
+
+@dp.message(GenerateLedModuleStates.waiting_for_lens_count)
+async def process_generate_led_module_lens_count(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    lens_counts = await fetch_led_module_lens_counts()
+    if not lens_counts:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник количества линз пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    raw = (message.text or "").strip()
+    parsed = parse_positive_integer(raw)
+    if parsed is None or parsed not in lens_counts:
+        await message.answer(
+            "⚠️ Укажите количество линз, доступное в списке.",
+            reply_markup=build_lens_counts_keyboard(lens_counts),
+        )
+        return
+    lens = await get_led_module_lens_count_by_value(parsed)
+    if lens is None:
+        await message.answer(
+            "⚠️ Не удалось подтвердить выбранное количество линз. Попробуйте снова.",
+            reply_markup=build_lens_counts_keyboard(lens_counts),
+        )
+        return
+    await state.update_data(generated_led_module_lens_count=lens)
+    power_options = await fetch_led_module_power_options()
+    if not power_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник мощностей пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    await state.set_state(GenerateLedModuleStates.waiting_for_power)
+    await message.answer(
+        "Выберите мощность Led модуля.\n\n"
+        "Доступные варианты:\n"
+        f"{format_materials_list(power_options)}",
+        reply_markup=build_power_values_keyboard(power_options),
+    )
+
+
+@dp.message(GenerateLedModuleStates.waiting_for_power)
+async def process_generate_led_module_power(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    power_options = await fetch_led_module_power_options()
+    if not power_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник мощностей пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    raw = (message.text or "").strip()
+    power_name = next((item for item in power_options if item.lower() == raw.lower()), None)
+    if power_name is None:
+        await message.answer(
+            "⚠️ Мощность не найдена. Выберите значение из списка.",
+            reply_markup=build_power_values_keyboard(power_options),
+        )
+        return
+    power = await get_led_module_power_option_by_name(power_name)
+    if power is None:
+        await message.answer(
+            "⚠️ Не удалось подтвердить выбранную мощность. Попробуйте снова.",
+            reply_markup=build_power_values_keyboard(power_options),
+        )
+        return
+    await state.update_data(generated_led_module_power=power)
+    voltage_options = await fetch_led_module_voltage_options()
+    if not voltage_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник напряжений пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    await state.set_state(GenerateLedModuleStates.waiting_for_voltage)
+    await message.answer(
+        "Выберите напряжение Led модуля.\n\n"
+        "Доступные варианты:\n"
+        f"{format_materials_list(voltage_options)}",
+        reply_markup=build_voltage_values_keyboard(voltage_options),
+    )
+
+
+@dp.message(GenerateLedModuleStates.waiting_for_voltage)
+async def process_generate_led_module_voltage(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    voltage_options = await fetch_led_module_voltage_options()
+    if not voltage_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник напряжений пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_KB,
+        )
+        return
+    raw = (message.text or "").strip()
+    voltage_name = next((item for item in voltage_options if item.lower() == raw.lower()), None)
+    if voltage_name is None:
+        await message.answer(
+            "⚠️ Напряжение не найдено. Выберите значение из списка.",
+            reply_markup=build_voltage_values_keyboard(voltage_options),
+        )
+        return
+    voltage = await get_led_module_voltage_option_by_name(voltage_name)
+    if voltage is None:
+        await message.answer(
+            "⚠️ Не удалось подтвердить выбранное напряжение. Попробуйте снова.",
+            reply_markup=build_voltage_values_keyboard(voltage_options),
+        )
+        return
+    data = await state.get_data()
+    article = data.get("generated_led_module_article")
+    manufacturer = data.get("generated_led_module_manufacturer")
+    series = data.get("generated_led_module_series")
+    color = data.get("generated_led_module_color")
+    lens = data.get("generated_led_module_lens_count")
+    power = data.get("generated_led_module_power")
+    if not all([article, manufacturer, series, color, lens, power]):
+        await state.clear()
+        await message.answer(
+            "⚠️ Недостаточно данных для сохранения Led модуля. Начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
+        )
+        return
+    record = await insert_generated_led_module(
+        article=article,
+        manufacturer_id=manufacturer["id"],
+        series_id=series["id"],
+        color_id=color["id"],
+        lens_count_id=lens["id"],
+        power_option_id=power["id"],
+        voltage_option_id=voltage["id"],
+    )
+    if record is None:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить Led модуль. Попробуйте позже.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
+        )
+        return
+    await state.clear()
+    created_at = record.get("created_at")
+    created_text = _format_datetime(created_at)
+    await message.answer(
+        "✅ Led модуль добавлен в базу.\n\n"
+        f"Артикул: {article}\n"
+        f"Производитель: {manufacturer['name']}\n"
+        f"Серия: {series['name']}\n"
+        f"Цвет: {color['name']}\n"
+        f"Количество линз: {lens['value']}\n"
+        f"Мощность: {power['name']}\n"
+        f"Напряжение: {voltage['name']}\n"
+        f"Создано: {created_text}",
         reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
     )
 
@@ -8124,6 +8674,11 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     ):
         await state.clear()
         await send_led_modules_settings_overview(message)
+        return
+    if current_state and current_state.startswith(
+        GenerateLedModuleStates.__name__
+    ):
+        await _cancel_generate_led_module_flow(message, state)
         return
     if current_state and current_state.startswith(
         ManageLedModuleVoltageStates.__name__
