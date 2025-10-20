@@ -252,6 +252,15 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS led_module_storage_locations (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS led_module_series (
                     id SERIAL PRIMARY KEY,
                     manufacturer_id INTEGER NOT NULL REFERENCES led_module_manufacturers(id) ON DELETE CASCADE,
@@ -479,6 +488,11 @@ class ManageLedModuleSeriesStates(StatesGroup):
     waiting_for_series_name_to_delete = State()
 
 
+class ManageLedModuleStorageStates(StatesGroup):
+    waiting_for_new_storage_location_name = State()
+    waiting_for_storage_location_to_delete = State()
+
+
 class ManageLedModuleLensStates(StatesGroup):
     waiting_for_new_lens_count = State()
     waiting_for_lens_count_to_delete = State()
@@ -688,6 +702,7 @@ WAREHOUSE_SETTINGS_ELECTRICS_KB = ReplyKeyboardMarkup(
 
 LED_MODULES_MANUFACTURERS_MENU_TEXT = "🏭 Производитель Led модулей"
 LED_MODULES_SERIES_MENU_TEXT = "🎬 Серия Led модулей"
+LED_MODULES_STORAGE_MENU_TEXT = "🏬 Места хранения Led модулей"
 LED_MODULES_POWER_MENU_TEXT = "⚡ Мощность модулей"
 LED_MODULES_LENS_MENU_TEXT = "🔢 Количество линз"
 LED_MODULES_COLORS_MENU_TEXT = "🎨 Цвет модулей"
@@ -697,6 +712,8 @@ LED_MODULES_ADD_MANUFACTURER_TEXT = "➕ Добавить производите
 LED_MODULES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led модулей"
 LED_MODULES_ADD_SERIES_TEXT = "➕ Добавить серию Led модулей"
 LED_MODULES_REMOVE_SERIES_TEXT = "➖ Удалить серию Led модулей"
+LED_MODULES_ADD_STORAGE_TEXT = "➕ Добавить место хранения Led модулей"
+LED_MODULES_REMOVE_STORAGE_TEXT = "➖ Удалить место хранения Led модулей"
 LED_MODULES_ADD_POWER_TEXT = "➕ Добавить мощность модулей"
 LED_MODULES_REMOVE_POWER_TEXT = "➖ Удалить мощность модулей"
 LED_MODULES_ADD_VOLTAGE_TEXT = "➕ Добавить напряжение модулей"
@@ -714,6 +731,7 @@ WAREHOUSE_SETTINGS_LED_MODULES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_MODULES_MANUFACTURERS_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_SERIES_MENU_TEXT)],
+        [KeyboardButton(text=LED_MODULES_STORAGE_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_COLORS_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_POWER_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_VOLTAGE_MENU_TEXT)],
@@ -736,6 +754,16 @@ WAREHOUSE_SETTINGS_LED_MODULES_SERIES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_MODULES_ADD_SERIES_TEXT)],
         [KeyboardButton(text=LED_MODULES_REMOVE_SERIES_TEXT)],
+        [KeyboardButton(text=LED_MODULES_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+
+WAREHOUSE_SETTINGS_LED_MODULES_STORAGE_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_MODULES_ADD_STORAGE_TEXT)],
+        [KeyboardButton(text=LED_MODULES_REMOVE_STORAGE_TEXT)],
         [KeyboardButton(text=LED_MODULES_BACK_TEXT)],
     ],
     resize_keyboard=True,
@@ -1136,6 +1164,16 @@ async def fetch_led_module_manufacturers() -> list[str]:
     return [row["name"] for row in rows]
 
 
+async def fetch_led_module_storage_locations() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM led_module_storage_locations ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
 async def fetch_led_strip_manufacturers() -> list[str]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -1478,12 +1516,44 @@ async def insert_led_module_manufacturer(name: str) -> bool:
     return row is not None
 
 
+async def insert_led_module_storage_location(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        existing_id = await conn.fetchval(
+            "SELECT id FROM led_module_storage_locations WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+        if existing_id:
+            return False
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_module_storage_locations (name)
+            VALUES ($1)
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
 async def delete_led_module_manufacturer(name: str) -> bool:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
     async with db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM led_module_manufacturers WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def delete_led_module_storage_location(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_module_storage_locations WHERE LOWER(name) = LOWER($1)",
             name,
         )
     return result.endswith(" 1")
@@ -3439,6 +3509,7 @@ async def send_electrics_settings_overview(message: Message) -> None:
 
 async def send_led_modules_settings_overview(message: Message) -> None:
     manufacturers = await fetch_led_module_manufacturers_with_series()
+    storage_locations = await fetch_led_module_storage_locations()
     lens_counts = await fetch_led_module_lens_counts()
     colors = await fetch_led_module_colors()
     power_options = await fetch_led_module_power_options()
@@ -3447,6 +3518,7 @@ async def send_led_modules_settings_overview(message: Message) -> None:
     formatted_colors = format_materials_list(colors)
     formatted_power = format_materials_list(power_options)
     formatted_voltage = format_materials_list(voltage_options)
+    formatted_storage = format_storage_locations_list(storage_locations)
     if manufacturers:
         lines: list[str] = []
         for manufacturer in manufacturers:
@@ -3473,6 +3545,11 @@ async def send_led_modules_settings_overview(message: Message) -> None:
             "Производители ещё не добавлены. Добавьте производителя, чтобы начать."\
             " Затем можно будет указать серии."
         )
+    text += (
+        "\n\nМеста хранения:\n"
+        f"{formatted_storage}\n\n"
+        "Используйте кнопку «🏬 Места хранения Led модулей», чтобы управлять списком."
+    )
     text += (
         "\n\nДоступные количества линз:\n"
         f"{formatted_lens_counts}\n\n"
@@ -3505,6 +3582,18 @@ async def send_led_module_manufacturers_menu(message: Message) -> None:
         f"{formatted}\n\n"
         "Используйте кнопки ниже, чтобы добавить или удалить производителя.",
         reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_MANUFACTURERS_KB,
+    )
+
+
+async def send_led_module_storage_overview(message: Message) -> None:
+    locations = await fetch_led_module_storage_locations()
+    formatted = format_storage_locations_list(locations)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led модули → Места хранения.\n\n"
+        "Доступные места хранения:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить место.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_STORAGE_KB,
     )
 
 
@@ -6502,6 +6591,14 @@ async def handle_led_module_series_menu(message: Message, state: FSMContext) -> 
     await send_led_module_series_menu(message)
 
 
+@dp.message(F.text == LED_MODULES_STORAGE_MENU_TEXT)
+async def handle_led_module_storage_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_module_storage_overview(message)
+
+
 @dp.message(F.text == LED_MODULES_BACK_TEXT)
 async def handle_back_to_led_module_settings(
     message: Message, state: FSMContext
@@ -6656,6 +6753,83 @@ async def handle_remove_led_module_manufacturer(
         "Выберите производителя, которого нужно удалить:",
         reply_markup=build_manufacturers_keyboard(manufacturers),
     )
+
+
+@dp.message(F.text == LED_MODULES_ADD_STORAGE_TEXT)
+async def handle_add_led_module_storage_location(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(
+        ManageLedModuleStorageStates.waiting_for_new_storage_location_name
+    )
+    locations = await fetch_led_module_storage_locations()
+    existing_text = format_storage_locations_list(locations)
+    await message.answer(
+        "Введите название места хранения для Led модулей.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedModuleStorageStates.waiting_for_new_storage_location_name)
+async def process_new_led_module_storage_location(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_led_module_storage_location(name):
+        await message.answer(f"✅ Место хранения «{name}» добавлено.")
+    else:
+        await message.answer(f"ℹ️ Место хранения «{name}» уже есть в списке.")
+    await state.clear()
+    await send_led_module_storage_overview(message)
+
+
+@dp.message(F.text == LED_MODULES_REMOVE_STORAGE_TEXT)
+async def handle_remove_led_module_storage_location(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    locations = await fetch_led_module_storage_locations()
+    if not locations:
+        await message.answer(
+            "Список мест хранения пуст. Добавьте места перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_STORAGE_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManageLedModuleStorageStates.waiting_for_storage_location_to_delete
+    )
+    await message.answer(
+        "Выберите место хранения, которое нужно удалить:",
+        reply_markup=build_storage_locations_keyboard(locations),
+    )
+
+
+@dp.message(ManageLedModuleStorageStates.waiting_for_storage_location_to_delete)
+async def process_remove_led_module_storage_location(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_led_module_storage_location(name):
+        await message.answer(f"🗑 Место хранения «{name}» удалено.")
+    else:
+        await message.answer(f"ℹ️ Место хранения «{name}» не найдено в списке.")
+    await state.clear()
+    await send_led_module_storage_overview(message)
 
 
 @dp.message(ManageLedModuleManufacturerStates.waiting_for_manufacturer_name_to_delete)
