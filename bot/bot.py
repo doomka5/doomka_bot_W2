@@ -655,6 +655,7 @@ WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
 WAREHOUSE_SETTINGS_ELECTRICS_TEXT = "⚡ Электрика ⚙️"
 WAREHOUSE_SETTINGS_ELECTRICS_LED_STRIPS_TEXT = "💡 Led лента ⚙️"
 WAREHOUSE_SETTINGS_ELECTRICS_LED_MODULES_TEXT = "🧩 Led модули ⚙️"
+LED_MODULES_BASE_MENU_TEXT = "Led модули baza"
 WAREHOUSE_SETTINGS_ELECTRICS_POWER_SUPPLIES_TEXT = "🔌 Блоки питания ⚙️"
 WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT = "⬅️ Назад к электрике"
 
@@ -708,6 +709,8 @@ LED_MODULES_LENS_MENU_TEXT = "🔢 Количество линз"
 LED_MODULES_COLORS_MENU_TEXT = "🎨 Цвет модулей"
 LED_MODULES_VOLTAGE_MENU_TEXT = "🔌 Напряжение модулей"
 LED_MODULES_BACK_TEXT = "⬅️ Назад к Led модулям"
+LED_MODULES_GENERATE_TEXT = "Сгенерировать Led модуль"
+LED_MODULES_DELETE_TEXT = "Удалить Led модуль"
 LED_MODULES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led модулей"
 LED_MODULES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led модулей"
 LED_MODULES_ADD_SERIES_TEXT = "➕ Добавить серию Led модулей"
@@ -732,11 +735,21 @@ WAREHOUSE_SETTINGS_LED_MODULES_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text=LED_MODULES_MANUFACTURERS_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_SERIES_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_STORAGE_MENU_TEXT)],
+        [KeyboardButton(text=LED_MODULES_BASE_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_COLORS_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_POWER_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_VOLTAGE_MENU_TEXT)],
         [KeyboardButton(text=LED_MODULES_LENS_MENU_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_MODULES_GENERATE_TEXT)],
+        [KeyboardButton(text=LED_MODULES_DELETE_TEXT)],
+        [KeyboardButton(text=LED_MODULES_BACK_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -3594,6 +3607,14 @@ async def send_led_module_storage_overview(message: Message) -> None:
         f"{formatted}\n\n"
         "Используйте кнопки ниже, чтобы добавить или удалить место.",
         reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_STORAGE_KB,
+    )
+
+
+async def send_led_module_base_menu(message: Message) -> None:
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led модули → Led модули baza.\n\n"
+        "Выберите действие, чтобы управлять базой Led модулей.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
     )
 
 
@@ -6597,6 +6618,36 @@ async def handle_led_module_storage_menu(message: Message, state: FSMContext) ->
         return
     await state.clear()
     await send_led_module_storage_overview(message)
+
+
+@dp.message(F.text == LED_MODULES_BASE_MENU_TEXT)
+async def handle_led_module_base_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_module_base_menu(message)
+
+
+@dp.message(F.text == LED_MODULES_GENERATE_TEXT)
+async def handle_generate_led_module(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await message.answer(
+        "🛠️ Сервис генерации Led модуля находится в разработке.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
+    )
+
+
+@dp.message(F.text == LED_MODULES_DELETE_TEXT)
+async def handle_delete_led_module(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await message.answer(
+        "🗑️ Удаление Led модуля находится в разработке.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
+    )
 
 
 @dp.message(F.text == LED_MODULES_BACK_TEXT)
