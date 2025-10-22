@@ -681,6 +681,7 @@ WAREHOUSE_ELECTRICS_LED_STRIPS_TEXT = "💡 Led лента"
 WAREHOUSE_ELECTRICS_LED_MODULES_TEXT = "🧩 Led модули"
 WAREHOUSE_ELECTRICS_POWER_SUPPLIES_TEXT = "🔌 Блоки питания"
 WAREHOUSE_LED_MODULES_ADD_TEXT = "➕ Добавить Led модули"
+WAREHOUSE_LED_MODULES_STOCK_TEXT = "📦 Остаток Led модулей на складе"
 WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT = "➖ Списать Led модули"
 WAREHOUSE_LED_MODULES_BACK_TO_ELECTRICS_TEXT = "⬅️ Назад к разделу «Электрика»"
 
@@ -1009,6 +1010,7 @@ WAREHOUSE_ELECTRICS_KB = ReplyKeyboardMarkup(
 WAREHOUSE_LED_MODULES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=WAREHOUSE_LED_MODULES_ADD_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_LED_MODULES_STOCK_TEXT)],
         [KeyboardButton(text=WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT)],
         [KeyboardButton(text=WAREHOUSE_LED_MODULES_BACK_TO_ELECTRICS_TEXT)],
     ],
@@ -1366,6 +1368,45 @@ async def fetch_generated_led_modules_with_details() -> list[dict[str, Any]]:
             JOIN led_module_voltage_options AS voltage ON voltage.id = glm.voltage_option_id
             ORDER BY glm.created_at DESC NULLS LAST, glm.id DESC
             """
+        )
+    return [dict(row) for row in rows]
+
+
+async def fetch_led_module_stock_summary() -> list[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                glm.article,
+                manufacturer.name AS manufacturer,
+                series.name AS series,
+                color.name AS color,
+                lens.value AS lens_count,
+                power.name AS power,
+                voltage.name AS voltage,
+                COALESCE(SUM(wlm.quantity), 0) AS total_quantity
+            FROM generated_led_modules AS glm
+            JOIN led_module_manufacturers AS manufacturer ON manufacturer.id = glm.manufacturer_id
+            JOIN led_module_series AS series ON series.id = glm.series_id
+            JOIN led_module_colors AS color ON color.id = glm.color_id
+            JOIN led_module_lens_counts AS lens ON lens.id = glm.lens_count_id
+            JOIN led_module_power_options AS power ON power.id = glm.power_option_id
+            JOIN led_module_voltage_options AS voltage ON voltage.id = glm.voltage_option_id
+            LEFT JOIN warehouse_led_modules AS wlm ON wlm.led_module_id = glm.id
+            GROUP BY
+                glm.id,
+                glm.article,
+                manufacturer.name,
+                series.name,
+                color.name,
+                lens.value,
+                power.name,
+                voltage.name
+            HAVING COALESCE(SUM(wlm.quantity), 0) > 0
+            ORDER BY total_quantity DESC, LOWER(glm.article)
+            """,
         )
     return [dict(row) for row in rows]
 
@@ -4360,6 +4401,32 @@ async def handle_warehouse_electrics_led_modules(
     await state.clear()
     await message.answer(
         "🧩 Раздел «Led модули». Выберите действие:",
+        reply_markup=WAREHOUSE_LED_MODULES_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_LED_MODULES_STOCK_TEXT)
+async def handle_led_module_stock(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    stock = await fetch_led_module_stock_summary()
+    if not stock:
+        await message.answer(
+            "ℹ️ На складе пока нет Led модулей. Добавьте позиции через кнопку "
+            f"«{WAREHOUSE_LED_MODULES_ADD_TEXT}».",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        return
+    lines = []
+    for item in stock:
+        details = (
+            f"{item['manufacturer']} / {item['series']} / {item['color']}, "
+            f"{item['lens_count']} линз, {item['power']} / {item['voltage']}"
+        )
+        lines.append(
+            f"• {item['article']} — {item['total_quantity']} шт. ({details})"
+        )
+    await message.answer(
+        "📦 Остаток Led модулей на складе:\n\n" + "\n".join(lines),
         reply_markup=WAREHOUSE_LED_MODULES_KB,
     )
 
