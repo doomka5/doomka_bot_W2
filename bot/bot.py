@@ -327,10 +327,30 @@ async def init_database() -> None:
                     id SERIAL PRIMARY KEY,
                     led_module_id INTEGER NOT NULL REFERENCES generated_led_modules(id) ON DELETE RESTRICT,
                     article TEXT NOT NULL,
-                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                    quantity INTEGER NOT NULL,
                     added_by_id BIGINT,
                     added_by_name TEXT,
                     added_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                ALTER TABLE warehouse_led_modules
+                DROP CONSTRAINT IF EXISTS warehouse_led_modules_quantity_check
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS written_off_led_modules (
+                    id SERIAL PRIMARY KEY,
+                    led_module_id INTEGER NOT NULL REFERENCES generated_led_modules(id) ON DELETE RESTRICT,
+                    article TEXT NOT NULL,
+                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                    project TEXT,
+                    written_off_by_id BIGINT,
+                    written_off_by_name TEXT,
+                    written_off_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
                 )
                 """
             )
@@ -620,6 +640,12 @@ class AddWarehousePlasticBatchStates(StatesGroup):
 class AddWarehouseLedModuleStates(StatesGroup):
     waiting_for_module = State()
     waiting_for_quantity = State()
+
+
+class WriteOffWarehouseLedModuleStates(StatesGroup):
+    waiting_for_module = State()
+    waiting_for_quantity = State()
+    waiting_for_project = State()
 
 
 class SearchWarehousePlasticStates(StatesGroup):
@@ -1087,6 +1113,13 @@ async def _cancel_add_led_module_flow(message: Message, state: FSMContext) -> No
     await state.clear()
     await message.answer(
         "❌ Добавление Led модуля отменено.", reply_markup=WAREHOUSE_LED_MODULES_KB
+    )
+
+
+async def _cancel_write_off_led_module_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Списание Led модулей отменено.", reply_markup=WAREHOUSE_LED_MODULES_KB
     )
 
 
@@ -1640,6 +1673,96 @@ async def insert_warehouse_led_module_record(
     if row is None:
         return {}
     return dict(row)
+
+
+async def get_led_module_stock_quantity(led_module_id: int) -> int:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        value = await conn.fetchval(
+            "SELECT COALESCE(SUM(quantity), 0) FROM warehouse_led_modules WHERE led_module_id = $1",
+            led_module_id,
+        )
+    return int(value or 0)
+
+
+async def write_off_led_module_stock(
+    *,
+    led_module_id: int,
+    article: str,
+    quantity: int,
+    project: str,
+    written_off_by_id: Optional[int],
+    written_off_by_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    if quantity <= 0:
+        raise ValueError("Quantity for write-off must be positive")
+    now_warsaw = datetime.now(WARSAW_TZ)
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            available = await conn.fetchval(
+                "SELECT COALESCE(SUM(quantity), 0) FROM warehouse_led_modules WHERE led_module_id = $1",
+                led_module_id,
+            )
+            if available is None or int(available) < quantity:
+                return None
+            ledger_row = await conn.fetchrow(
+                """
+                INSERT INTO warehouse_led_modules (
+                    led_module_id,
+                    article,
+                    quantity,
+                    added_by_id,
+                    added_by_name,
+                    added_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id
+                """,
+                led_module_id,
+                article,
+                -quantity,
+                written_off_by_id,
+                written_off_by_name,
+                now_warsaw,
+            )
+            if ledger_row is None:
+                return None
+            written_off_row = await conn.fetchrow(
+                """
+                INSERT INTO written_off_led_modules (
+                    led_module_id,
+                    article,
+                    quantity,
+                    project,
+                    written_off_by_id,
+                    written_off_by_name,
+                    written_off_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING
+                    id,
+                    led_module_id,
+                    article,
+                    quantity,
+                    project,
+                    written_off_by_id,
+                    written_off_by_name,
+                    written_off_at
+                """,
+                led_module_id,
+                article,
+                quantity,
+                project,
+                written_off_by_id,
+                written_off_by_name,
+                now_warsaw,
+            )
+    if written_off_row is None:
+        return None
+    return dict(written_off_row)
 
 
 async def fetch_film_storage_locations() -> list[str]:
@@ -4586,8 +4709,226 @@ async def handle_write_off_warehouse_led_modules(
     message: Message, state: FSMContext
 ) -> None:
     await state.clear()
+    stock = await fetch_led_module_stock_summary()
+    available_modules = [
+        item for item in stock if int(item.get("total_quantity") or 0) > 0
+    ]
+    if not available_modules:
+        await message.answer(
+            "ℹ️ На складе нет Led модулей для списания.",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        return
+    overview_lines: list[str] = []
+    for item in available_modules:
+        details = (
+            f"{item['manufacturer']} / {item['series']} / {item['color']}, "
+            f"{item['lens_count']} линз, {item['power']} / {item['voltage']}"
+        )
+        overview_lines.append(
+            f"• {item['article']} — {details}. Остаток: {item['total_quantity']} шт"
+        )
+    await state.set_state(WriteOffWarehouseLedModuleStates.waiting_for_module)
     await message.answer(
-        "➖ Списание Led модулей находится в разработке.",
+        "Выберите Led модуль, который нужно списать со склада.\n\n"
+        "Доступные позиции:\n" + "\n".join(overview_lines),
+        reply_markup=build_led_module_articles_keyboard(
+            [item["article"] for item in available_modules]
+        ),
+    )
+
+
+@dp.message(WriteOffWarehouseLedModuleStates.waiting_for_module)
+async def process_write_off_led_module_selection(
+    message: Message, state: FSMContext
+) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_write_off_led_module_flow(message, state)
+        return
+    if not text:
+        stock = await fetch_led_module_stock_summary()
+        available_modules = [
+            item for item in stock if int(item.get("total_quantity") or 0) > 0
+        ]
+        if not available_modules:
+            await state.clear()
+            await message.answer(
+                "ℹ️ На складе нет Led модулей для списания.",
+                reply_markup=WAREHOUSE_LED_MODULES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Выберите артикул Led модуля из списка ниже.",
+            reply_markup=build_led_module_articles_keyboard(
+                [item["article"] for item in available_modules]
+            ),
+        )
+        return
+    module = await get_generated_led_module_by_article(text)
+    if module is None:
+        stock = await fetch_led_module_stock_summary()
+        available_modules = [
+            item for item in stock if int(item.get("total_quantity") or 0) > 0
+        ]
+        if not available_modules:
+            await state.clear()
+            await message.answer(
+                "ℹ️ На складе нет Led модулей для списания.",
+                reply_markup=WAREHOUSE_LED_MODULES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Led модуль с таким артикулом не найден. Выберите вариант из списка.",
+            reply_markup=build_led_module_articles_keyboard(
+                [item["article"] for item in available_modules]
+            ),
+        )
+        return
+    available_quantity = await get_led_module_stock_quantity(module["id"])
+    if available_quantity <= 0:
+        await message.answer(
+            "ℹ️ Указанный Led модуль отсутствует на складе. Выберите другой артикул.",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        await state.clear()
+        return
+    await state.update_data(
+        selected_led_module_id=module["id"],
+        selected_led_module_article=module["article"],
+        available_quantity=available_quantity,
+    )
+    await state.set_state(WriteOffWarehouseLedModuleStates.waiting_for_quantity)
+    await message.answer(
+        f"Укажите количество для списания (доступно {available_quantity} шт).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(WriteOffWarehouseLedModuleStates.waiting_for_quantity)
+async def process_write_off_led_module_quantity(
+    message: Message, state: FSMContext
+) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_write_off_led_module_flow(message, state)
+        return
+    quantity = parse_positive_integer(text)
+    if quantity is None:
+        await message.answer(
+            "⚠️ Количество должно быть положительным числом. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    data = await state.get_data()
+    available_quantity = int(data.get("available_quantity") or 0)
+    if available_quantity <= 0:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Указанный Led модуль отсутствует на складе.",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        return
+    if quantity > available_quantity:
+        await message.answer(
+            f"⚠️ Для списания доступно только {available_quantity} шт. Укажите другое количество.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(write_off_quantity=quantity)
+    await state.set_state(WriteOffWarehouseLedModuleStates.waiting_for_project)
+    await message.answer(
+        "Укажите заказ, для которого списываются Led модули.",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(WriteOffWarehouseLedModuleStates.waiting_for_project)
+async def process_write_off_led_module_project(
+    message: Message, state: FSMContext
+) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_write_off_led_module_flow(message, state)
+        return
+    project = text
+    if not project:
+        await message.answer(
+            "⚠️ Название заказа не может быть пустым. Укажите заказ.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    data = await state.get_data()
+    module_id = data.get("selected_led_module_id")
+    article = data.get("selected_led_module_article")
+    quantity = data.get("write_off_quantity")
+    if module_id is None or article is None or quantity is None:
+        await _cancel_write_off_led_module_flow(message, state)
+        return
+    written_off_by_id = message.from_user.id if message.from_user else None
+    written_off_by_name = message.from_user.full_name if message.from_user else None
+    try:
+        result = await write_off_led_module_stock(
+            led_module_id=int(module_id),
+            article=str(article),
+            quantity=int(quantity),
+            project=project,
+            written_off_by_id=written_off_by_id,
+            written_off_by_name=written_off_by_name,
+        )
+    except Exception:
+        logging.exception("Failed to write off led modules")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось списать Led модули. Попробуйте позже.",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        return
+    if result is None:
+        current_available = await get_led_module_stock_quantity(int(module_id))
+        if current_available <= 0:
+            await state.clear()
+            await message.answer(
+                "ℹ️ Указанный Led модуль отсутствует на складе.",
+                reply_markup=WAREHOUSE_LED_MODULES_KB,
+            )
+            return
+        await state.update_data(available_quantity=current_available)
+        await state.set_state(WriteOffWarehouseLedModuleStates.waiting_for_quantity)
+        await message.answer(
+            f"⚠️ Для списания доступно только {current_available} шт. Укажите другое количество.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    details = await get_generated_led_module_details(int(module_id))
+    remaining_quantity = await get_led_module_stock_quantity(int(module_id))
+    await state.clear()
+    summary_lines: list[str] = []
+    if details:
+        summary_lines.extend(
+            [
+                f"Артикул: {details['article']}",
+                f"Производитель: {details['manufacturer']}",
+                f"Серия: {details['series']}",
+                f"Цвет: {details['color']}",
+                f"Линз: {details['lens_count']}",
+                f"Мощность: {details['power']}",
+                f"Напряжение: {details['voltage']}",
+            ]
+        )
+    else:
+        summary_lines.append(f"Артикул: {article}")
+    summary_lines.append(f"Списано: {quantity} шт")
+    summary_lines.append(f"Остаток на складе: {remaining_quantity} шт")
+    summary_lines.append(f"Заказ: {project}")
+    summary_lines.append(
+        f"Списал: {result.get('written_off_by_name') or written_off_by_name or '—'}"
+    )
+    summary_lines.append(
+        f"Дата списания: {_format_datetime(result.get('written_off_at'))}"
+    )
+    await message.answer(
+        "✅ Led модули списаны со склада.\n\n" + "\n".join(summary_lines),
         reply_markup=WAREHOUSE_LED_MODULES_KB,
     )
 
