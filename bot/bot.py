@@ -18,8 +18,6 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardMarkup,
     KeyboardButton,
     Message,
     TelegramObject,
@@ -27,7 +25,6 @@ from aiogram.types import (
     ReplyKeyboardRemove,
     BufferedInputFile,
 )
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
@@ -65,231 +62,6 @@ db_pool: Optional[asyncpg.Pool] = None
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
 
-PERMISSION_FUNCTIONS: tuple[str, ...] = ("search", "add", "writeoff", "move", "settings")
-
-PERMISSION_LABELS: Dict[str, str] = {
-    "add": "Добавить",
-    "search": "Поиск",
-    "writeoff": "Списание",
-    "move": "Перемещение",
-    "settings": "Настройки",
-}
-
-PERMISSION_BUTTON_TEXTS: Dict[str, str] = {
-    "add": "➕ Добавить",
-    "search": "📦 Поиск",
-    "writeoff": "📉 Списание",
-    "move": "🔄 Перемещение",
-    "settings": "⚙️ Настройки",
-}
-
-DEFAULT_ROLE_PERMISSIONS: Dict[str, Dict[str, bool]] = {
-    "admin": {function: True for function in PERMISSION_FUNCTIONS},
-    "manager": {
-        "add": True,
-        "search": True,
-        "move": True,
-        "writeoff": False,
-        "settings": False,
-    },
-    "warehouse": {
-        "add": True,
-        "search": True,
-        "writeoff": True,
-        "move": False,
-        "settings": False,
-    },
-}
-
-# Тексты, используемые старыми клавиатурами, которые остаются действительными
-LEGACY_BUTTON_ALIASES: Dict[str, set[str]] = {
-    "add": {"➕ Добавить"},
-    "search": {"🔍 Найти", "📦 Поиск"},
-    "writeoff": {"➖ Списать", "📉 Списание"},
-    "move": {"🔁 Переместить", "🔄 Перемещение"},
-    "settings": {"⚙️ Настройки"},
-}
-
-
-# === Работа с правами доступа ===
-def _normalize_role(role: Optional[str]) -> Optional[str]:
-    if role is None:
-        return None
-    return role.strip().lower() or None
-
-
-def _normalize_function(function_name: str) -> str:
-    return function_name.strip().lower()
-
-
-async def fetch_user_by_tg_id(tg_id: int) -> Optional[Dict[str, Any]]:
-    if db_pool is None:
-        logging.warning("Database pool is not initialised when fetching user")
-        return None
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT id, tg_id, username, position, role FROM users WHERE tg_id = $1",
-            tg_id,
-        )
-    return dict(row) if row else None
-
-
-async def ensure_role_permissions_exist(role: str) -> None:
-    normalized_role = _normalize_role(role)
-    if normalized_role is None or db_pool is None:
-        return
-    defaults = DEFAULT_ROLE_PERMISSIONS.get(normalized_role, {})
-    async with db_pool.acquire() as conn:
-        for function in PERMISSION_FUNCTIONS:
-            allowed_default = defaults.get(function, False)
-            await conn.execute(
-                """
-                INSERT INTO permissions (role, function, allowed)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (role, function) DO NOTHING
-                """,
-                normalized_role,
-                function,
-                allowed_default,
-            )
-
-
-async def check_permission(role: Optional[str], function_name: str) -> bool:
-    normalized_role = _normalize_role(role)
-    if normalized_role is None or db_pool is None:
-        return False
-    normalized_function = _normalize_function(function_name)
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT allowed FROM permissions WHERE role = $1 AND function = $2",
-            normalized_role,
-            normalized_function,
-        )
-        if row is None:
-            defaults = DEFAULT_ROLE_PERMISSIONS.get(normalized_role, {})
-            allowed_default = defaults.get(normalized_function, False)
-            await conn.execute(
-                """
-                INSERT INTO permissions (role, function, allowed)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (role, function) DO NOTHING
-                """,
-                normalized_role,
-                normalized_function,
-                allowed_default,
-            )
-            return allowed_default
-    return bool(row["allowed"])
-
-
-async def get_allowed_functions(role: Optional[str]) -> set[str]:
-    normalized_role = _normalize_role(role)
-    if normalized_role is None or db_pool is None:
-        return set()
-    await ensure_role_permissions_exist(normalized_role)
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT function FROM permissions WHERE role = $1 AND allowed IS TRUE",
-            normalized_role,
-        )
-    return {row["function"] for row in rows}
-
-
-async def get_role_permissions(role: Optional[str]) -> Dict[str, bool]:
-    normalized_role = _normalize_role(role)
-    permissions: Dict[str, bool] = {function: False for function in PERMISSION_FUNCTIONS}
-    if normalized_role is None or db_pool is None:
-        return permissions
-    await ensure_role_permissions_exist(normalized_role)
-    async with db_pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT function, allowed FROM permissions WHERE role = $1",
-            normalized_role,
-        )
-    for row in rows:
-        permissions[row["function"]] = bool(row["allowed"])
-    return permissions
-
-
-async def set_role_permission(role: str, function_name: str, allowed: bool) -> None:
-    normalized_role = _normalize_role(role)
-    if normalized_role is None or db_pool is None:
-        return
-    normalized_function = _normalize_function(function_name)
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO permissions (role, function, allowed)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (role, function) DO UPDATE SET allowed = EXCLUDED.allowed
-            """,
-            normalized_role,
-            normalized_function,
-            allowed,
-        )
-
-
-async def get_main_menu(role: Optional[str]) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
-    allowed_functions = await get_allowed_functions(role)
-    buttons: list[list[KeyboardButton]] = []
-    for function in PERMISSION_FUNCTIONS:
-        if function == "settings":
-            # Кнопка «Настройки» всегда должна быть последней
-            continue
-        if function in allowed_functions:
-            buttons.append([KeyboardButton(text=PERMISSION_BUTTON_TEXTS[function])])
-    if "settings" in allowed_functions:
-        buttons.append([KeyboardButton(text=PERMISSION_BUTTON_TEXTS["settings"])])
-    if not buttons:
-        return ReplyKeyboardRemove()
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
-
-async def get_main_menu_for_user(tg_id: Optional[int]) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
-    if tg_id is None:
-        return ReplyKeyboardRemove()
-    user = await fetch_user_by_tg_id(tg_id)
-    role = user.get("role") if user else None
-    return await get_main_menu(role)
-
-
-async def get_settings_menu(role: Optional[str]) -> ReplyKeyboardMarkup:
-    normalized_role = _normalize_role(role)
-    buttons: list[list[KeyboardButton]] = []
-    if normalized_role == "admin":
-        buttons.append([KeyboardButton(text="👤 Управление пользователями")])
-    buttons.append([KeyboardButton(text="👥 Пользователи")])
-    buttons.append([KeyboardButton(text="🔄 Перезагрузить")])
-    buttons.append([KeyboardButton(text="⬅️ Главное меню")])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
-
-def permission_required(function_name: str):
-    def decorator(handler: Callable[..., Awaitable[Any]]):
-        async def wrapper(message: Message, *args: Any, **kwargs: Any) -> Any:
-            if message.from_user is None:
-                return
-            user = await fetch_user_by_tg_id(message.from_user.id)
-            if not user:
-                await message.answer(
-                    "⛔️ Нет доступа (неизвестный пользователь).",
-                    reply_markup=await get_main_menu_for_user(message.from_user.id),
-                )
-                return
-            role = user.get("role")
-            if not await check_permission(role, function_name):
-                await message.answer(
-                    "🚫 У вас нет доступа к этой функции.",
-                    reply_markup=await get_main_menu(role),
-                )
-                return
-            return await handler(message, *args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
 # === Проверка доступа пользователей ===
 async def user_has_access(tg_id: int) -> bool:
     if db_pool is None:
@@ -301,24 +73,25 @@ async def user_has_access(tg_id: int) -> bool:
 
 
 async def user_is_admin(tg_id: int) -> bool:
-    user = await fetch_user_by_tg_id(tg_id)
-    role = user.get("role") if user else None
-    return _normalize_role(role) == "admin"
+    if db_pool is None:
+        logging.warning("Database pool is not initialised when checking admin role")
+        return False
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT role FROM users WHERE tg_id = $1", tg_id)
+    if not row:
+        return False
+    role = (row["role"] or "").lower()
+    return "админист" in role or "admin" in role
 
 
 async def ensure_admin_access(message: Message, state: Optional[FSMContext] = None) -> bool:
     if not message.from_user:
         return False
-    user = await fetch_user_by_tg_id(message.from_user.id)
-    role = user.get("role") if user else None
-    if await check_permission(role, "settings"):
+    if await user_is_admin(message.from_user.id):
         return True
     if state is not None:
         await state.clear()
-    await message.answer(
-        "🚫 У вас недостаточно прав для управления настройками.",
-        reply_markup=await get_main_menu(role),
-    )
+    await message.answer("🚫 У вас недостаточно прав для управления настройками.", reply_markup=MAIN_MENU_KB)
     return False
 
 
@@ -361,17 +134,6 @@ async def init_database() -> None:
                     position TEXT NOT NULL,
                     role TEXT NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
-                )
-                """
-            )
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS permissions (
-                    id SERIAL PRIMARY KEY,
-                    role TEXT NOT NULL,
-                    function TEXT NOT NULL,
-                    allowed BOOLEAN DEFAULT TRUE,
-                    UNIQUE (role, function)
                 )
                 """
             )
@@ -696,10 +458,6 @@ async def init_database() -> None:
             )
 
 
-    for role in DEFAULT_ROLE_PERMISSIONS.keys():
-        await ensure_role_permissions_exist(role)
-
-
 async def close_database() -> None:
     global db_pool
     if db_pool:
@@ -916,6 +674,25 @@ class WriteOffWarehousePlasticStates(StatesGroup):
 
 
 # === Клавиатуры ===
+MAIN_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [
+            KeyboardButton(text="🏢 Склад"),
+            KeyboardButton(text="⚙️ Настройки"),
+        ],
+    ],
+    resize_keyboard=True,
+)
+
+SETTINGS_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👥 Пользователи")],
+        [KeyboardButton(text="🔄 Перезагрузить")],
+        [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
 USERS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить пользователя")],
@@ -1451,25 +1228,6 @@ async def fetch_all_users_from_db() -> list[Dict[str, Any]]:
             """
         )
     return [dict(row) for row in rows]
-
-
-async def fetch_user_by_username(username: str) -> Optional[Dict[str, Any]]:
-    if db_pool is None:
-        raise RuntimeError("Database pool is not initialised")
-    normalized = username.strip().lstrip("@")
-    if not normalized:
-        return None
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT id, tg_id, username, position, role, created_at
-            FROM users
-            WHERE LOWER(username) = LOWER($1)
-            LIMIT 1
-            """,
-            normalized,
-        )
-    return dict(row) if row else None
 
 
 async def fetch_plastic_material_types() -> list[str]:
@@ -4453,76 +4211,15 @@ async def send_power_supplies_settings_overview(message: Message) -> None:
 # === Команды ===
 @dp.message(CommandStart())
 async def handle_start(message: Message) -> None:
-    user_id = message.from_user.id if message.from_user else None
-    reply_markup = await get_main_menu_for_user(user_id)
-    await message.answer("👋 Привет! Выберите действие:", reply_markup=reply_markup)
+    await message.answer("👋 Привет! Выберите действие:", reply_markup=MAIN_MENU_KB)
 
 
 @dp.message(Command("settings"))
 @dp.message(F.text == "⚙️ Настройки")
-@permission_required("settings")
 async def handle_settings(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
-    user = await fetch_user_by_tg_id(message.from_user.id)
-    role = user.get("role") if user else None
-    await message.answer(
-        "⚙️ Настройки. Выберите действие:", reply_markup=await get_settings_menu(role)
-    )
-
-
-@dp.message(Command("setrole"))
-@permission_required("settings")
-async def handle_set_role(message: Message) -> None:
-    if not message.from_user:
-        return
-    if not await ensure_admin_access(message):
-        return
-    admin_user = await fetch_user_by_tg_id(message.from_user.id)
-    admin_role = admin_user.get("role") if admin_user else None
-    settings_menu = await get_settings_menu(admin_role)
-    text = (message.text or "").strip()
-    parts = text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer(
-            "ℹ️ Использование: /setrole @username роль",
-            reply_markup=settings_menu,
-        )
-        return
-    username_arg = parts[1].strip().lstrip("@")
-    new_role = parts[2].strip()
-    if not username_arg or not new_role:
-        await message.answer(
-            "ℹ️ Укажите пользователя и роль. Пример: /setrole @username manager",
-            reply_markup=settings_menu,
-        )
-        return
-    target_user = await fetch_user_by_username(username_arg)
-    if not target_user:
-        await message.answer(
-            f"ℹ️ Пользователь @{username_arg} не найден в базе.",
-            reply_markup=settings_menu,
-        )
-        return
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET role = $1 WHERE id = $2",
-            new_role,
-            target_user["id"],
-        )
-    await ensure_role_permissions_exist(new_role)
-    normalized_role = _normalize_role(new_role) or new_role
-    logging.info(
-        "ROLE UPDATE: %s -> role set to %s",
-        target_user.get("username") or f"ID {target_user.get('tg_id')}",
-        normalized_role,
-    )
-    await message.answer(
-        "✅ Роль обновлена.\n"
-        f"👤 Пользователь: {target_user.get('username')}\n"
-        f"🔐 Новая роль: {new_role}",
-        reply_markup=settings_menu,
-    )
+    await message.answer("⚙️ Настройки. Выберите действие:", reply_markup=SETTINGS_MENU_KB)
 
 
 @dp.message(F.text == "🔄 Перезагрузить")
@@ -4530,19 +4227,15 @@ async def handle_restart(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
 
-    user = await fetch_user_by_tg_id(message.from_user.id)
-    role = user.get("role") if user else None
-    settings_menu = await get_settings_menu(role)
-
     if not UPDATE_SCRIPT_PATH.exists():
         await message.answer(
-            "⚠️ Файл update.sh не найден на сервере.", reply_markup=settings_menu
+            "⚠️ Файл update.sh не найден на сервере.", reply_markup=SETTINGS_MENU_KB
         )
         return
 
     await message.answer(
         "♻️ Перезапуск системы начат... Подожди немного ⏳",
-        reply_markup=settings_menu,
+        reply_markup=SETTINGS_MENU_KB,
     )
 
     try:
@@ -4553,87 +4246,14 @@ async def handle_restart(message: Message) -> None:
     except Exception as exc:
         await message.answer(
             f"⚠️ Ошибка при запуске обновления:\n`{exc}`",
-            reply_markup=settings_menu,
+            reply_markup=SETTINGS_MENU_KB,
         )
         return
 
     await message.answer(
         "✅ Скрипт обновления запущен!\nЯ пришлю уведомление, когда процесс завершится.",
-        reply_markup=settings_menu,
+        reply_markup=SETTINGS_MENU_KB,
     )
-
-
-def _build_users_inline_keyboard(users: list[Dict[str, Any]]) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for user in users:
-        username = user.get("username") or f"ID {user.get('tg_id')}"
-        role = user.get("role") or "—"
-        builder.button(
-            text=f"{username} ({role})",
-            callback_data=f"perm_user:{user.get('tg_id')}",
-        )
-    if builder.buttons:
-        builder.adjust(1)
-    return builder.as_markup()
-
-
-async def _render_permissions_card(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    user = await fetch_user_by_tg_id(tg_id)
-    if not user:
-        text = "ℹ️ Пользователь не найден."
-        builder = InlineKeyboardBuilder()
-        builder.button(text="⬅️ Назад", callback_data="perm_back")
-        builder.adjust(1)
-        return text, builder.as_markup()
-    username = user.get("username") or f"ID {tg_id}"
-    role = user.get("role") or "—"
-    permissions = await get_role_permissions(role)
-    lines = [f"👤 Пользователь: {username}", f"Роль: {role}", "", "Управление доступом:"]
-    for function in PERMISSION_FUNCTIONS:
-        status = "✅" if permissions.get(function) else "🚫"
-        label = PERMISSION_LABELS[function]
-        lines.append(f"{status} {label}")
-    builder = InlineKeyboardBuilder()
-    for function in PERMISSION_FUNCTIONS:
-        status = "✅" if permissions.get(function) else "🚫"
-        label = PERMISSION_LABELS[function]
-        builder.button(
-            text=f"{status} {label}",
-            callback_data=f"perm_toggle:{tg_id}:{function}",
-        )
-    builder.button(text="⬅️ Назад", callback_data="perm_back")
-    builder.adjust(1)
-    return "\n".join(lines), builder.as_markup()
-
-
-async def _ensure_admin_permissions_user_interaction(
-    message_or_callback: Message | CallbackQuery,
-) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
-    tg_user = None
-    if isinstance(message_or_callback, CallbackQuery):
-        from_user = message_or_callback.from_user
-    else:
-        from_user = message_or_callback.from_user
-    if from_user is None:
-        return None, None
-    tg_user = await fetch_user_by_tg_id(from_user.id)
-    if not tg_user:
-        if isinstance(message_or_callback, CallbackQuery):
-            await message_or_callback.answer("⛔️ Нет доступа.", show_alert=True)
-        else:
-            await message_or_callback.answer("⛔️ Нет доступа (неизвестный пользователь).")
-        return None, None
-    role = tg_user.get("role")
-    if not await check_permission(role, "settings") or _normalize_role(role) != "admin":
-        if isinstance(message_or_callback, CallbackQuery):
-            await message_or_callback.answer("🚫 Нет доступа к управлению.", show_alert=True)
-        else:
-            await message_or_callback.answer(
-                "🚫 У вас нет доступа к управлению пользователями.",
-                reply_markup=await get_settings_menu(role),
-            )
-        return None, None
-    return tg_user, role
 
 
 @dp.message(F.text == "⚙️ Настройки склада")
@@ -4648,24 +4268,6 @@ async def handle_users_menu(message: Message) -> None:
     if not await ensure_admin_access(message):
         return
     await message.answer("👥 Пользователи. Выберите действие:", reply_markup=USERS_MENU_KB)
-
-
-@dp.message(F.text == "👤 Управление пользователями")
-async def handle_manage_permissions_menu(message: Message) -> None:
-    _, role = await _ensure_admin_permissions_user_interaction(message)
-    if role is None:
-        return
-    users = await fetch_all_users_from_db()
-    if not users:
-        await message.answer(
-            "ℹ️ В базе пока нет пользователей.",
-            reply_markup=await get_settings_menu(role),
-        )
-        return
-    await message.answer(
-        "👤 Управление пользователями. Выберите сотрудника:",
-        reply_markup=_build_users_inline_keyboard(users),
-    )
 
 
 @dp.message(F.text == "📋 Посмотреть всех пользователей")
@@ -4690,88 +4292,6 @@ async def handle_list_all_users(message: Message) -> None:
             await message.answer(chunk, reply_markup=USERS_MENU_KB)
         else:
             await message.answer(chunk)
-
-
-@dp.callback_query(F.data.startswith("perm_user:"))
-async def handle_permissions_user_select(callback: CallbackQuery) -> None:
-    _, role = await _ensure_admin_permissions_user_interaction(callback)
-    if role is None:
-        return
-    data = callback.data or ""
-    try:
-        tg_id = int(data.split(":", maxsplit=1)[1])
-    except (ValueError, IndexError):
-        await callback.answer("⚠️ Не удалось определить пользователя.", show_alert=True)
-        return
-    text, markup = await _render_permissions_card(tg_id)
-    if callback.message:
-        await callback.message.edit_text(text, reply_markup=markup)
-    await callback.answer()
-
-
-@dp.callback_query(F.data.startswith("perm_toggle:"))
-async def handle_permissions_toggle(callback: CallbackQuery) -> None:
-    _, role = await _ensure_admin_permissions_user_interaction(callback)
-    if role is None:
-        return
-    data = callback.data or ""
-    parts = data.split(":", maxsplit=2)
-    if len(parts) != 3:
-        await callback.answer("⚠️ Неверные параметры.", show_alert=True)
-        return
-    try:
-        tg_id = int(parts[1])
-    except ValueError:
-        await callback.answer("⚠️ Неверный идентификатор пользователя.", show_alert=True)
-        return
-    function = _normalize_function(parts[2])
-    if function not in PERMISSION_FUNCTIONS:
-        await callback.answer("⚠️ Неизвестная функция.", show_alert=True)
-        return
-    user = await fetch_user_by_tg_id(tg_id)
-    if not user:
-        await callback.answer("ℹ️ Пользователь не найден.", show_alert=True)
-        return
-    role_value = user.get("role") or ""
-    normalized_role = _normalize_role(role_value)
-    if normalized_role is None:
-        await callback.answer("ℹ️ У пользователя не задана роль.", show_alert=True)
-        return
-    permissions = await get_role_permissions(role_value)
-    new_allowed = not permissions.get(function, False)
-    await set_role_permission(role_value, function, new_allowed)
-    username = user.get("username") or f"ID {tg_id}"
-    logging.info(
-        "ACCESS UPDATE: %s -> set %s=%s for user %s",
-        normalized_role,
-        function,
-        new_allowed,
-        username,
-    )
-    if callback.message:
-        text, markup = await _render_permissions_card(tg_id)
-        try:
-            await callback.message.edit_text(text, reply_markup=markup)
-        except Exception:
-            logging.exception("Failed to update permissions message")
-    await callback.answer("✅ Права обновлены")
-
-
-@dp.callback_query(F.data == "perm_back")
-async def handle_permissions_back(callback: CallbackQuery) -> None:
-    _, role = await _ensure_admin_permissions_user_interaction(callback)
-    if role is None:
-        return
-    users = await fetch_all_users_from_db()
-    if callback.message:
-        if not users:
-            await callback.message.edit_text("ℹ️ В базе пока нет пользователей.")
-        else:
-            await callback.message.edit_text(
-                "👤 Управление пользователями. Выберите сотрудника:",
-                reply_markup=_build_users_inline_keyboard(users),
-            )
-    await callback.answer()
 
 
 @dp.message(F.text == "➕ Добавить пользователя")
@@ -4941,9 +4461,7 @@ async def process_add_user_created_at(message: Message, state: FSMContext) -> No
 
 @dp.message(F.text == "⬅️ Главное меню")
 async def handle_back_to_main(message: Message) -> None:
-    user_id = message.from_user.id if message.from_user else None
-    reply_markup = await get_main_menu_for_user(user_id)
-    await message.answer("Главное меню.", reply_markup=reply_markup)
+    await message.answer("Главное меню.", reply_markup=MAIN_MENU_KB)
 
 
 @dp.message(F.text == "⬅️ Назад в настройки")
@@ -6272,8 +5790,7 @@ async def handle_export_warehouse_plastics(message: Message) -> None:
     )
 
 
-@dp.message(F.text.in_(LEGACY_BUTTON_ALIASES["search"]))
-@permission_required("search")
+@dp.message(F.text == "🔍 Найти")
 async def handle_search_warehouse_plastic(message: Message, state: FSMContext) -> None:
     await state.set_state(SearchWarehousePlasticStates.choosing_mode)
     await message.answer(
@@ -6320,8 +5837,7 @@ async def handle_comment_warehouse_plastic(message: Message, state: FSMContext) 
     )
 
 
-@dp.message(F.text.in_(LEGACY_BUTTON_ALIASES["move"]))
-@permission_required("move")
+@dp.message(F.text == "🔁 Переместить")
 async def handle_move_warehouse_plastic(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(MoveWarehousePlasticStates.waiting_for_article)
@@ -6331,8 +5847,7 @@ async def handle_move_warehouse_plastic(message: Message, state: FSMContext) -> 
     )
 
 
-@dp.message(F.text.in_(LEGACY_BUTTON_ALIASES["writeoff"]))
-@permission_required("writeoff")
+@dp.message(F.text == "➖ Списать")
 async def handle_write_off_warehouse_plastic(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(WriteOffWarehousePlasticStates.waiting_for_article)
@@ -6895,8 +6410,7 @@ async def process_write_off_project(message: Message, state: FSMContext) -> None
     )
 
 
-@dp.message(F.text.in_(LEGACY_BUTTON_ALIASES["add"]))
-@permission_required("add")
+@dp.message(F.text == "➕ Добавить")
 async def handle_add_warehouse_plastic(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AddWarehousePlasticStates.waiting_for_article)
