@@ -6,24 +6,29 @@ import asyncio
 import logging
 import os
 import subprocess
+from functools import wraps
 from io import BytesIO
 from pathlib import Path
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Sequence
 
 import asyncpg
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     KeyboardButton,
     Message,
-    TelegramObject,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
-    BufferedInputFile,
+    TelegramObject,
 )
 from zoneinfo import ZoneInfo
 
@@ -62,36 +67,294 @@ db_pool: Optional[asyncpg.Pool] = None
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
 
+SPECIAL_FULL_ACCESS_TG_ID = 37352491
+
+PERMISSION_TITLES: Dict[str, str] = {
+    "add": "Добавить",
+    "search": "Поиск",
+    "writeoff": "Списание",
+    "move": "Перемещение",
+    "settings": "Настройки",
+}
+
+DEFAULT_ROLE_PERMISSIONS: Dict[str, Dict[str, bool]] = {
+    "admin": {function: True for function in PERMISSION_TITLES},
+    "manager": {
+        "add": True,
+        "search": True,
+        "move": True,
+        "writeoff": False,
+        "settings": False,
+    },
+    "warehouse": {
+        "add": True,
+        "search": True,
+        "writeoff": True,
+        "move": False,
+        "settings": False,
+    },
+}
+
+KNOWN_PERMISSION_FUNCTIONS: Sequence[str] = tuple(PERMISSION_TITLES.keys())
+
+
 # === Проверка доступа пользователей ===
-async def user_has_access(tg_id: int) -> bool:
+async def get_user(tg_id: int) -> Optional[asyncpg.Record]:
     if db_pool is None:
-        logging.warning("Database pool is not initialised when checking access")
-        return False
+        logging.warning("Database pool is not initialised when fetching user")
+        return None
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT 1 FROM users WHERE tg_id = $1", tg_id)
-    return row is not None
+        return await conn.fetchrow("SELECT * FROM users WHERE tg_id = $1", tg_id)
+
+
+async def user_has_access(tg_id: int) -> bool:
+    user = await get_user(tg_id)
+    return user is not None
 
 
 async def user_is_admin(tg_id: int) -> bool:
+    user = await get_user(tg_id)
+    if not user:
+        return False
+    role = (user.get("role") or "").lower()
+    return role == "admin"
+
+
+async def check_permission(role: str, function_name: str) -> bool:
     if db_pool is None:
-        logging.warning("Database pool is not initialised when checking admin role")
+        logging.warning("Database pool is not initialised when checking permission")
         return False
+    normalized_role = role.lower()
+    normalized_function = function_name.lower()
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT role FROM users WHERE tg_id = $1", tg_id)
-    if not row:
+        record = await conn.fetchrow(
+            "SELECT allowed FROM permissions WHERE role = $1 AND function = $2",
+            normalized_role,
+            normalized_function,
+        )
+    if record is None:
         return False
-    role = (row["role"] or "").lower()
-    return "админист" in role or "admin" in role
+    return bool(record["allowed"])
+
+
+async def check_user_permission(tg_id: int, function_name: str) -> bool:
+    user = await get_user(tg_id)
+    if not user:
+        return False
+    role = (user.get("role") or "").lower()
+    if not role:
+        return False
+    return await check_permission(role, function_name)
+
+
+async def get_allowed_functions(role: str) -> set[str]:
+    if db_pool is None:
+        logging.warning("Database pool is not initialised when fetching permissions")
+        return set()
+    normalized_role = role.lower()
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT function FROM permissions WHERE role = $1 AND allowed = TRUE",
+            normalized_role,
+        )
+    return {row["function"] for row in rows}
+
+
+async def set_permission(role: str, function_name: str, allowed: bool) -> None:
+    if db_pool is None:
+        logging.warning("Database pool is not initialised when updating permission")
+        return
+    normalized_role = role.lower()
+    normalized_function = function_name.lower()
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO permissions (role, function, allowed)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (role, function)
+            DO UPDATE SET allowed = EXCLUDED.allowed
+            """,
+            normalized_role,
+            normalized_function,
+            allowed,
+        )
+
+
+async def ensure_role_permissions(role: str, conn: Optional[asyncpg.Connection] = None) -> None:
+    normalized_role = role.lower()
+    target_conn = conn
+    if db_pool is None and conn is None:
+        logging.warning("Database pool is not initialised when ensuring permissions")
+        return
+    if target_conn is None:
+        async with db_pool.acquire() as acquired_conn:
+            await ensure_role_permissions(normalized_role, acquired_conn)
+        return
+
+    defaults = DEFAULT_ROLE_PERMISSIONS.get(normalized_role, {})
+    existing_rows = await target_conn.fetch(
+        "SELECT function FROM permissions WHERE role = $1",
+        normalized_role,
+    )
+    existing_functions = {row["function"] for row in existing_rows}
+    for function_name in KNOWN_PERMISSION_FUNCTIONS:
+        if function_name in existing_functions:
+            continue
+        allowed = defaults.get(function_name, False)
+        await target_conn.execute(
+            "INSERT INTO permissions (role, function, allowed) VALUES ($1, $2, $3)",
+            normalized_role,
+            function_name,
+            allowed,
+        )
+
+
+async def get_main_menu_for_role(role: Optional[str]) -> ReplyKeyboardMarkup:
+    normalized_role = (role or "").lower()
+    allowed_functions: set[str] = set()
+    if normalized_role:
+        allowed_functions = await get_allowed_functions(normalized_role)
+    buttons = [[KeyboardButton(text="🏢 Склад")]]
+    if "search" in allowed_functions:
+        buttons.append([KeyboardButton(text="🔍 Найти")])
+    if "add" in allowed_functions:
+        buttons.append([KeyboardButton(text="➕ Добавить")])
+    if "writeoff" in allowed_functions:
+        buttons.append([KeyboardButton(text="➖ Списать")])
+    if "move" in allowed_functions:
+        buttons.append([KeyboardButton(text="🔁 Переместить")])
+    if "settings" in allowed_functions:
+        buttons.append([KeyboardButton(text="⚙️ Настройки")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+async def get_main_menu_for_user(tg_id: Optional[int]) -> ReplyKeyboardMarkup:
+    if tg_id is None:
+        return await get_main_menu_for_role(None)
+    user = await get_user(tg_id)
+    role = user.get("role") if user else None
+    return await get_main_menu_for_role(role)
+
+
+def build_settings_menu(role: Optional[str]) -> ReplyKeyboardMarkup:
+    normalized_role = (role or "").lower()
+    buttons: list[list[KeyboardButton]] = []
+    if normalized_role == "admin":
+        buttons.append([KeyboardButton(text="👤 Управление пользователями")])
+        buttons.append([KeyboardButton(text="👥 Пользователи")])
+    buttons.append([KeyboardButton(text="🔄 Перезагрузить")])
+    buttons.append([KeyboardButton(text="⬅️ Главное меню")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+def build_settings_menu_for_user(user: Optional[asyncpg.Record]) -> ReplyKeyboardMarkup:
+    role = user.get("role") if user else None
+    return build_settings_menu(role)
+
+
+async def get_settings_menu_for_user_id(tg_id: Optional[int]) -> ReplyKeyboardMarkup:
+    if tg_id is None:
+        return build_settings_menu(None)
+    user = await get_user(tg_id)
+    return build_settings_menu_for_user(user)
+
+
+def permission_required(function_name: str):
+    def decorator(handler: Callable[..., Awaitable[Any]]):
+        @wraps(handler)
+        async def wrapper(event: TelegramObject, *args: Any, **kwargs: Any):
+            user_id: Optional[int] = None
+            if isinstance(event, Message) and event.from_user:
+                user_id = event.from_user.id
+            elif isinstance(event, CallbackQuery) and event.from_user:
+                user_id = event.from_user.id
+            if user_id is None:
+                return await handler(event, *args, **kwargs)
+            if await check_user_permission(user_id, function_name):
+                return await handler(event, *args, **kwargs)
+            warning_text = "🚫 У вас нет доступа к этой функции."
+            if isinstance(event, CallbackQuery):
+                await event.answer(warning_text, show_alert=True)
+                return None
+            await event.answer(warning_text)
+            return None
+
+        return wrapper
+
+    return decorator
+
+
+def format_user_permissions_text(
+    username: str, role: str, allowed_functions: set[str]
+) -> str:
+    lines = [
+        f"👤 Пользователь: {username}",
+        f"Роль: {role or '—'}",
+        "",
+        "Управление доступом:",
+    ]
+    for function_name, title in PERMISSION_TITLES.items():
+        status = "✅" if function_name in allowed_functions else "🚫"
+        lines.append(f"{status} {title}")
+    return "\n".join(lines)
+
+
+def build_permission_toggle_keyboard(
+    tg_id: int, allowed_functions: set[str]
+) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    for function_name, title in PERMISSION_TITLES.items():
+        status = "✅" if function_name in allowed_functions else "🚫"
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{status} {title}",
+                    callback_data=f"perm_toggle:{tg_id}:{function_name}",
+                )
+            ]
+        )
+    buttons.append(
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="perm_back")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def build_user_selection_keyboard(
+    users: Sequence[Dict[str, Any]]
+) -> InlineKeyboardMarkup:
+    inline_buttons: list[list[InlineKeyboardButton]] = []
+    for user in users:
+        tg_id = user.get("tg_id")
+        if tg_id is None:
+            continue
+        username = user.get("username") or f"ID {tg_id}"
+        role = user.get("role") or "—"
+        label = f"{username} ({role})"
+        inline_buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"user_perm:{tg_id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
+
+
 
 
 async def ensure_admin_access(message: Message, state: Optional[FSMContext] = None) -> bool:
     if not message.from_user:
         return False
-    if await user_is_admin(message.from_user.id):
+    if await check_user_permission(message.from_user.id, "settings"):
         return True
     if state is not None:
         await state.clear()
-    await message.answer("🚫 У вас недостаточно прав для управления настройками.", reply_markup=MAIN_MENU_KB)
+    main_menu = await get_main_menu_for_user(message.from_user.id)
+    await message.answer(
+        "🚫 У вас недостаточно прав для управления настройками.",
+        reply_markup=main_menu,
+    )
     return False
 
 
@@ -136,6 +399,23 @@ async def init_database() -> None:
                     created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
                 )
                 """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS permissions (
+                    id SERIAL PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    function TEXT NOT NULL,
+                    allowed BOOLEAN DEFAULT TRUE,
+                    UNIQUE(role, function)
+                )
+                """
+            )
+            for role_name in DEFAULT_ROLE_PERMISSIONS:
+                await ensure_role_permissions(role_name, conn)
+            await conn.execute(
+                "UPDATE users SET role = 'admin' WHERE tg_id = $1",
+                SPECIAL_FULL_ACCESS_TG_ID,
             )
             # Таблица склада пластиков
             await conn.execute(
@@ -674,24 +954,6 @@ class WriteOffWarehousePlasticStates(StatesGroup):
 
 
 # === Клавиатуры ===
-MAIN_MENU_KB = ReplyKeyboardMarkup(
-    keyboard=[
-        [
-            KeyboardButton(text="🏢 Склад"),
-            KeyboardButton(text="⚙️ Настройки"),
-        ],
-    ],
-    resize_keyboard=True,
-)
-
-SETTINGS_MENU_KB = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="👥 Пользователи")],
-        [KeyboardButton(text="🔄 Перезагрузить")],
-        [KeyboardButton(text="⬅️ Главное меню")],
-    ],
-    resize_keyboard=True,
-)
 
 USERS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -4211,31 +4473,34 @@ async def send_power_supplies_settings_overview(message: Message) -> None:
 # === Команды ===
 @dp.message(CommandStart())
 async def handle_start(message: Message) -> None:
-    await message.answer("👋 Привет! Выберите действие:", reply_markup=MAIN_MENU_KB)
+    tg_id = message.from_user.id if message.from_user else None
+    main_menu = await get_main_menu_for_user(tg_id)
+    await message.answer("👋 Привет! Выберите действие:", reply_markup=main_menu)
 
 
 @dp.message(Command("settings"))
 @dp.message(F.text == "⚙️ Настройки")
+@permission_required("settings")
 async def handle_settings(message: Message) -> None:
-    if not await ensure_admin_access(message):
-        return
-    await message.answer("⚙️ Настройки. Выберите действие:", reply_markup=SETTINGS_MENU_KB)
+    tg_id = message.from_user.id if message.from_user else None
+    reply_markup = await get_settings_menu_for_user_id(tg_id)
+    await message.answer("⚙️ Настройки. Выберите действие:", reply_markup=reply_markup)
 
 
 @dp.message(F.text == "🔄 Перезагрузить")
+@permission_required("settings")
 async def handle_restart(message: Message) -> None:
-    if not await ensure_admin_access(message):
-        return
-
+    tg_id = message.from_user.id if message.from_user else None
+    reply_markup = await get_settings_menu_for_user_id(tg_id)
     if not UPDATE_SCRIPT_PATH.exists():
         await message.answer(
-            "⚠️ Файл update.sh не найден на сервере.", reply_markup=SETTINGS_MENU_KB
+            "⚠️ Файл update.sh не найден на сервере.", reply_markup=reply_markup
         )
         return
 
     await message.answer(
         "♻️ Перезапуск системы начат... Подожди немного ⏳",
-        reply_markup=SETTINGS_MENU_KB,
+        reply_markup=reply_markup,
     )
 
     try:
@@ -4246,28 +4511,186 @@ async def handle_restart(message: Message) -> None:
     except Exception as exc:
         await message.answer(
             f"⚠️ Ошибка при запуске обновления:\n`{exc}`",
-            reply_markup=SETTINGS_MENU_KB,
+            reply_markup=reply_markup,
         )
         return
 
     await message.answer(
         "✅ Скрипт обновления запущен!\nЯ пришлю уведомление, когда процесс завершится.",
-        reply_markup=SETTINGS_MENU_KB,
+        reply_markup=reply_markup,
     )
 
 
 @dp.message(F.text == "⚙️ Настройки склада")
+@permission_required("settings")
 async def handle_warehouse_settings(message: Message) -> None:
-    if not await ensure_admin_access(message):
-        return
     await message.answer("⚙️ Настройки склада. Выберите действие:", reply_markup=WAREHOUSE_SETTINGS_MENU_KB)
 
 
 @dp.message(F.text == "👥 Пользователи")
+@permission_required("settings")
 async def handle_users_menu(message: Message) -> None:
-    if not await ensure_admin_access(message):
-        return
     await message.answer("👥 Пользователи. Выберите действие:", reply_markup=USERS_MENU_KB)
+
+
+@dp.message(F.text == "👤 Управление пользователями")
+@permission_required("settings")
+async def handle_user_permission_management(message: Message) -> None:
+    users = await fetch_all_users_from_db()
+    if not users:
+        await message.answer(
+            "📭 Пользователи ещё не добавлены.",
+            reply_markup=await get_settings_menu_for_user_id(
+                message.from_user.id if message.from_user else None
+            ),
+        )
+        return
+    keyboard = build_user_selection_keyboard(users)
+    await message.answer(
+        "Выберите пользователя, чтобы настроить доступ:",
+        reply_markup=keyboard,
+    )
+
+
+@dp.callback_query(F.data.startswith("user_perm:"))
+@permission_required("settings")
+async def handle_user_permission_card(callback_query: CallbackQuery) -> None:
+    data = callback_query.data or ""
+    _, _, tg_id_str = data.partition(":")
+    try:
+        target_tg_id = int(tg_id_str)
+    except ValueError:
+        await callback_query.answer("Некорректные данные.", show_alert=True)
+        return
+    user_record = await get_user(target_tg_id)
+    if not user_record:
+        await callback_query.answer("Пользователь не найден.", show_alert=True)
+        return
+    role_value = (user_record.get("role") or "").strip()
+    if role_value:
+        await ensure_role_permissions(role_value)
+        allowed_functions = await get_allowed_functions(role_value.lower())
+    else:
+        allowed_functions = set()
+    username = user_record.get("username") or f"ID {target_tg_id}"
+    text = format_user_permissions_text(username, role_value or "—", allowed_functions)
+    keyboard = build_permission_toggle_keyboard(target_tg_id, allowed_functions)
+    try:
+        await callback_query.message.edit_text(text, reply_markup=keyboard)
+    except TelegramBadRequest:
+        await callback_query.message.edit_reply_markup(reply_markup=keyboard)
+    await callback_query.answer()
+
+
+@dp.callback_query(F.data.startswith("perm_toggle:"))
+@permission_required("settings")
+async def handle_permission_toggle(callback_query: CallbackQuery) -> None:
+    data = callback_query.data or ""
+    parts = data.split(":", 2)
+    if len(parts) != 3:
+        await callback_query.answer("Некорректные данные.", show_alert=True)
+        return
+    _, tg_id_str, function_name = parts
+    if function_name not in PERMISSION_TITLES:
+        await callback_query.answer("Неизвестная функция.", show_alert=True)
+        return
+    try:
+        target_tg_id = int(tg_id_str)
+    except ValueError:
+        await callback_query.answer("Некорректные данные.", show_alert=True)
+        return
+    user_record = await get_user(target_tg_id)
+    if not user_record:
+        await callback_query.answer("Пользователь не найден.", show_alert=True)
+        return
+    role_value = (user_record.get("role") or "").strip()
+    if not role_value:
+        await callback_query.answer("У пользователя не указана роль.", show_alert=True)
+        return
+    await ensure_role_permissions(role_value)
+    current_allowed = await get_allowed_functions(role_value.lower())
+    new_allowed = function_name not in current_allowed
+    await set_permission(role_value, function_name, new_allowed)
+    username = user_record.get("username") or f"ID {target_tg_id}"
+    logging.info(
+        "ACCESS UPDATE: %s -> set %s=%s for user %s",
+        role_value.lower(),
+        function_name,
+        str(new_allowed),
+        username,
+    )
+    updated_allowed = await get_allowed_functions(role_value.lower())
+    text = format_user_permissions_text(username, role_value, updated_allowed)
+    keyboard = build_permission_toggle_keyboard(target_tg_id, updated_allowed)
+    try:
+        await callback_query.message.edit_text(text, reply_markup=keyboard)
+    except TelegramBadRequest:
+        await callback_query.message.edit_reply_markup(reply_markup=keyboard)
+    await callback_query.answer("Доступ обновлён")
+
+
+@dp.callback_query(F.data == "perm_back")
+@permission_required("settings")
+async def handle_permission_back(callback_query: CallbackQuery) -> None:
+    users = await fetch_all_users_from_db()
+    if not users:
+        try:
+            await callback_query.message.edit_text("📭 Пользователи ещё не добавлены.")
+        except TelegramBadRequest:
+            await callback_query.message.edit_reply_markup(reply_markup=None)
+        await callback_query.answer()
+        return
+    keyboard = build_user_selection_keyboard(users)
+    try:
+        await callback_query.message.edit_text(
+            "Выберите пользователя, чтобы настроить доступ:",
+            reply_markup=keyboard,
+        )
+    except TelegramBadRequest:
+        await callback_query.message.edit_reply_markup(reply_markup=keyboard)
+    await callback_query.answer()
+
+
+@dp.message(Command("setrole"))
+@permission_required("settings")
+async def handle_set_role(message: Message) -> None:
+    text = (message.text or "").strip()
+    parts = text.split()
+    if len(parts) < 3:
+        await message.answer("Использование: /setrole @username роль")
+        return
+    username_input = parts[1].lstrip("@")
+    role_input = parts[2].strip().lower()
+    if not username_input or not role_input:
+        await message.answer("Укажите имя пользователя и роль.")
+        return
+    if db_pool is None:
+        await message.answer("⚠️ База данных недоступна.")
+        return
+    async with db_pool.acquire() as conn:
+        user_record = await conn.fetchrow(
+            "SELECT * FROM users WHERE LOWER(username) = LOWER($1)",
+            username_input,
+        )
+        if user_record is None:
+            await message.answer("Пользователь с таким именем не найден.")
+            return
+        await conn.execute(
+            "UPDATE users SET role = $1 WHERE id = $2",
+            role_input,
+            user_record["id"],
+        )
+    await ensure_role_permissions(role_input)
+    await message.answer(
+        "✅ Роль обновлена.\n"
+        f"Пользователь @{username_input} теперь с ролью «{role_input}»."
+    )
+    logging.info(
+        "ACCESS UPDATE: set role=%s for user %s (tg_id=%s)",
+        role_input,
+        username_input,
+        user_record["tg_id"],
+    )
 
 
 @dp.message(F.text == "📋 Посмотреть всех пользователей")
@@ -4461,13 +4884,14 @@ async def process_add_user_created_at(message: Message, state: FSMContext) -> No
 
 @dp.message(F.text == "⬅️ Главное меню")
 async def handle_back_to_main(message: Message) -> None:
-    await message.answer("Главное меню.", reply_markup=MAIN_MENU_KB)
+    tg_id = message.from_user.id if message.from_user else None
+    main_menu = await get_main_menu_for_user(tg_id)
+    await message.answer("Главное меню.", reply_markup=main_menu)
 
 
 @dp.message(F.text == "⬅️ Назад в настройки")
+@permission_required("settings")
 async def handle_back_to_settings(message: Message) -> None:
-    if not await ensure_admin_access(message):
-        return
     await handle_settings(message)
 
 
@@ -4529,6 +4953,7 @@ async def handle_warehouse_electrics_led_modules(
 
 
 @dp.message(F.text == WAREHOUSE_LED_MODULES_STOCK_TEXT)
+@permission_required("search")
 async def handle_led_module_stock(message: Message, state: FSMContext) -> None:
     await state.clear()
     stock = await fetch_led_module_stock_summary()
@@ -4555,6 +4980,7 @@ async def handle_led_module_stock(message: Message, state: FSMContext) -> None:
 
 
 @dp.message(F.text == WAREHOUSE_LED_MODULES_ADD_TEXT)
+@permission_required("add")
 async def handle_add_warehouse_led_modules(message: Message, state: FSMContext) -> None:
     await state.clear()
     modules = await fetch_generated_led_modules_with_details()
@@ -4705,6 +5131,7 @@ async def process_add_led_module_quantity(message: Message, state: FSMContext) -
 
 
 @dp.message(F.text == WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT)
+@permission_required("writeoff")
 async def handle_write_off_warehouse_led_modules(
     message: Message, state: FSMContext
 ) -> None:
@@ -4963,6 +5390,7 @@ async def _reply_films_feature_in_development(message: Message, feature: str) ->
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_ADD_TEXT)
+@permission_required("add")
 async def handle_add_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
     manufacturers = await fetch_film_manufacturers()
@@ -4992,6 +5420,7 @@ async def handle_add_warehouse_film(message: Message, state: FSMContext) -> None
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_WRITE_OFF_TEXT)
+@permission_required("writeoff")
 async def handle_write_off_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(WriteOffWarehouseFilmStates.waiting_for_article)
@@ -5095,6 +5524,7 @@ async def handle_comment_warehouse_film(message: Message, state: FSMContext) -> 
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_MOVE_TEXT)
+@permission_required("move")
 async def handle_move_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
     locations = await fetch_film_storage_locations()
@@ -5112,6 +5542,7 @@ async def handle_move_warehouse_film(message: Message, state: FSMContext) -> Non
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_SEARCH_TEXT)
+@permission_required("search")
 async def handle_search_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(SearchWarehouseFilmStates.choosing_mode)
@@ -5122,6 +5553,7 @@ async def handle_search_warehouse_film(message: Message, state: FSMContext) -> N
 
 
 @dp.message(F.text == WAREHOUSE_FILMS_EXPORT_TEXT)
+@permission_required("search")
 async def handle_export_warehouse_film(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("⏳ Формирую файл экспорта. Пожалуйста, подождите...")
@@ -5754,6 +6186,7 @@ async def process_film_comment(message: Message, state: FSMContext) -> None:
 
 
 @dp.message(F.text == "📤 Экспорт")
+@permission_required("search")
 async def handle_export_warehouse_plastics(message: Message) -> None:
     await message.answer("⏳ Формирую файл экспорта. Пожалуйста, подождите...")
     try:
@@ -5791,6 +6224,7 @@ async def handle_export_warehouse_plastics(message: Message) -> None:
 
 
 @dp.message(F.text == "🔍 Найти")
+@permission_required("search")
 async def handle_search_warehouse_plastic(message: Message, state: FSMContext) -> None:
     await state.set_state(SearchWarehousePlasticStates.choosing_mode)
     await message.answer(
@@ -5838,6 +6272,7 @@ async def handle_comment_warehouse_plastic(message: Message, state: FSMContext) 
 
 
 @dp.message(F.text == "🔁 Переместить")
+@permission_required("move")
 async def handle_move_warehouse_plastic(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(MoveWarehousePlasticStates.waiting_for_article)
@@ -5848,6 +6283,7 @@ async def handle_move_warehouse_plastic(message: Message, state: FSMContext) -> 
 
 
 @dp.message(F.text == "➖ Списать")
+@permission_required("writeoff")
 async def handle_write_off_warehouse_plastic(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(WriteOffWarehousePlasticStates.waiting_for_article)
@@ -6411,6 +6847,7 @@ async def process_write_off_project(message: Message, state: FSMContext) -> None
 
 
 @dp.message(F.text == "➕ Добавить")
+@permission_required("add")
 async def handle_add_warehouse_plastic(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AddWarehousePlasticStates.waiting_for_article)
