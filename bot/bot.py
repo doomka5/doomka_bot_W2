@@ -323,6 +323,19 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS warehouse_led_modules (
+                    id SERIAL PRIMARY KEY,
+                    led_module_id INTEGER NOT NULL REFERENCES generated_led_modules(id) ON DELETE RESTRICT,
+                    article TEXT NOT NULL,
+                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                    added_by_id BIGINT,
+                    added_by_name TEXT,
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS led_strip_manufacturers (
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -602,6 +615,11 @@ class AddWarehousePlasticBatchStates(StatesGroup):
     waiting_for_width = State()
     waiting_for_storage = State()
     waiting_for_comment = State()
+
+
+class AddWarehouseLedModuleStates(StatesGroup):
+    waiting_for_module = State()
+    waiting_for_quantity = State()
 
 
 class SearchWarehousePlasticStates(StatesGroup):
@@ -1063,6 +1081,13 @@ async def _cancel_add_plastic_batch_flow(message: Message, state: FSMContext) ->
     )
 
 
+async def _cancel_add_led_module_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Добавление Led модуля отменено.", reply_markup=WAREHOUSE_LED_MODULES_KB
+    )
+
+
 async def _cancel_search_plastic_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("❌ Поиск отменён.", reply_markup=WAREHOUSE_PLASTICS_KB)
@@ -1345,6 +1370,37 @@ async def fetch_generated_led_modules_with_details() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+async def get_generated_led_module_details(module_id: int) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                glm.id,
+                glm.article,
+                manufacturer.name AS manufacturer,
+                series.name AS series,
+                color.name AS color,
+                lens.value AS lens_count,
+                power.name AS power,
+                voltage.name AS voltage
+            FROM generated_led_modules AS glm
+            JOIN led_module_manufacturers AS manufacturer ON manufacturer.id = glm.manufacturer_id
+            JOIN led_module_series AS series ON series.id = glm.series_id
+            JOIN led_module_colors AS color ON color.id = glm.color_id
+            JOIN led_module_lens_counts AS lens ON lens.id = glm.lens_count_id
+            JOIN led_module_power_options AS power ON power.id = glm.power_option_id
+            JOIN led_module_voltage_options AS voltage ON voltage.id = glm.voltage_option_id
+            WHERE glm.id = $1
+            """,
+            module_id,
+        )
+    if row is None:
+        return None
+    return dict(row)
+
+
 async def fetch_led_module_lens_counts() -> list[int]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -1505,6 +1561,43 @@ async def insert_generated_led_module(
         )
     if row is None:
         return None
+    return dict(row)
+
+
+async def insert_warehouse_led_module_record(
+    *,
+    led_module_id: int,
+    article: str,
+    quantity: int,
+    added_by_id: Optional[int],
+    added_by_name: Optional[str],
+) -> Dict[str, Any]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    added_at = datetime.now(WARSAW_TZ)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO warehouse_led_modules (
+                led_module_id,
+                article,
+                quantity,
+                added_by_id,
+                added_by_name,
+                added_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, led_module_id, article, quantity, added_by_id, added_by_name, added_at
+            """,
+            led_module_id,
+            article,
+            quantity,
+            added_by_id,
+            added_by_name,
+            added_at,
+        )
+    if row is None:
+        return {}
     return dict(row)
 
 
@@ -3542,6 +3635,14 @@ def build_lens_counts_keyboard(counts: list[int]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_led_module_articles_keyboard(articles: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for article in articles:
+        rows.append([KeyboardButton(text=article)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 def build_thickness_keyboard(thicknesses: list[Decimal]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for value in thicknesses:
@@ -4266,9 +4367,149 @@ async def handle_warehouse_electrics_led_modules(
 @dp.message(F.text == WAREHOUSE_LED_MODULES_ADD_TEXT)
 async def handle_add_warehouse_led_modules(message: Message, state: FSMContext) -> None:
     await state.clear()
+    modules = await fetch_generated_led_modules_with_details()
+    if not modules:
+        await message.answer(
+            "ℹ️ В базе пока нет Led модулей. Добавьте их через «⚙️ Настройки склада → "
+            "Электрика → Led модули → Led модули baza».",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        return
+    overview_lines = []
+    for module in modules:
+        line = (
+            f"• {module['article']} — {module['manufacturer']} / {module['series']} / {module['color']}, "
+            f"{module['lens_count']} линз, {module['power']} / {module['voltage']}"
+        )
+        overview_lines.append(line)
+    await state.set_state(AddWarehouseLedModuleStates.waiting_for_module)
     await message.answer(
-        "ℹ️ Используйте раздел «⚙️ Настройки склада → Электрика → Led модули → Led модули baza», "
-        "чтобы сгенерировать новые Led модули для базы.",
+        "Выберите Led модуль, который нужно добавить на склад.\n\n"
+        "Доступные позиции:\n"
+        + "\n".join(overview_lines),
+        reply_markup=build_led_module_articles_keyboard([module["article"] for module in modules]),
+    )
+
+
+@dp.message(AddWarehouseLedModuleStates.waiting_for_module)
+async def process_add_led_module_selection(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_led_module_flow(message, state)
+        return
+    if not text:
+        modules = await fetch_generated_led_modules_with_details()
+        if not modules:
+            await state.clear()
+            await message.answer(
+                "ℹ️ В базе пока нет Led модулей. Добавьте их через настройки.",
+                reply_markup=WAREHOUSE_LED_MODULES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Укажите артикул Led модуля, используя кнопки ниже.",
+            reply_markup=build_led_module_articles_keyboard([module["article"] for module in modules]),
+        )
+        return
+    module = await get_generated_led_module_by_article(text)
+    if module is None:
+        modules = await fetch_generated_led_modules_with_details()
+        if not modules:
+            await state.clear()
+            await message.answer(
+                "ℹ️ В базе пока нет Led модулей. Добавьте их через настройки.",
+                reply_markup=WAREHOUSE_LED_MODULES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Led модуль не найден. Выберите вариант из списка.",
+            reply_markup=build_led_module_articles_keyboard([module["article"] for module in modules]),
+        )
+        return
+    await state.update_data(
+        selected_led_module_id=module["id"],
+        selected_led_module_article=module["article"],
+    )
+    await state.set_state(AddWarehouseLedModuleStates.waiting_for_quantity)
+    await message.answer(
+        f"Укажите количество для артикула {module['article']} (положительное число).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehouseLedModuleStates.waiting_for_quantity)
+async def process_add_led_module_quantity(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_led_module_flow(message, state)
+        return
+    quantity = parse_positive_integer(text)
+    if quantity is None:
+        await message.answer(
+            "⚠️ Количество должно быть положительным числом. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    data = await state.get_data()
+    module_id = data.get("selected_led_module_id")
+    article = data.get("selected_led_module_article")
+    if module_id is None or article is None:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось определить выбранный Led модуль. Начните заново.",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        return
+    added_by_id = message.from_user.id if message.from_user else None
+    added_by_name = message.from_user.full_name if message.from_user else None
+    try:
+        record = await insert_warehouse_led_module_record(
+            led_module_id=module_id,
+            article=article,
+            quantity=quantity,
+            added_by_id=added_by_id,
+            added_by_name=added_by_name,
+        )
+    except Exception:
+        logging.exception("Failed to insert warehouse led module record")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить запись. Попробуйте позже.",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        return
+    if not record:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить запись. Попробуйте позже.",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        return
+    details = await get_generated_led_module_details(module_id)
+    await state.clear()
+    details_lines: list[str] = []
+    if details:
+        details_lines.extend(
+            [
+                f"Артикул: {details['article']}",
+                f"Производитель: {details['manufacturer']}",
+                f"Серия: {details['series']}",
+                f"Цвет: {details['color']}",
+                f"Линз: {details['lens_count']}",
+                f"Мощность: {details['power']}",
+                f"Напряжение: {details['voltage']}",
+            ]
+        )
+    else:
+        details_lines.append(f"Артикул: {article}")
+    quantity_value = record.get("quantity", quantity)
+    summary_employee = record.get("added_by_name") or added_by_name or "—"
+    added_at_text = _format_datetime(record.get("added_at"))
+    details_lines.append(f"Количество: {quantity_value} шт")
+    details_lines.append(f"Добавил: {summary_employee}")
+    details_lines.append(f"Добавлено: {added_at_text}")
+    await message.answer(
+        "✅ Led модуль добавлен на склад.\n\n" + "\n".join(details_lines),
         reply_markup=WAREHOUSE_LED_MODULES_KB,
     )
 
@@ -8733,6 +8974,11 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     ):
         await state.clear()
         await send_led_modules_settings_overview(message)
+        return
+    if current_state and current_state.startswith(
+        AddWarehouseLedModuleStates.__name__
+    ):
+        await _cancel_add_led_module_flow(message, state)
         return
     if current_state and current_state.startswith(
         GenerateLedModuleStates.__name__
