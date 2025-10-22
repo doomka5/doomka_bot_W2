@@ -3803,8 +3803,39 @@ async def send_led_module_storage_overview(message: Message) -> None:
 
 
 async def send_led_module_base_menu(message: Message) -> None:
+    modules = await fetch_generated_led_modules_with_details()
+    if modules:
+        lines = []
+        for module in modules:
+            article = module.get("article", "—")
+            manufacturer = module.get("manufacturer", "—")
+            series = module.get("series", "—")
+            color = module.get("color", "—")
+            lens_count = module.get("lens_count")
+            power = module.get("power", "—")
+            voltage = module.get("voltage", "—")
+            lens_text = "—" if lens_count is None else str(lens_count)
+            lines.append(
+                " | ".join(
+                    [
+                        f"Артикул: {article}",
+                        f"Производитель: {manufacturer}",
+                        f"Серия: {series}",
+                        f"Цвет: {color}",
+                        f"Линз: {lens_text}",
+                        f"Мощность: {power}",
+                        f"Напряжение: {voltage}",
+                    ]
+                )
+            )
+        generated_text = "📋 Уже сгенерированные Led модули:\n" + "\n".join(lines)
+    else:
+        generated_text = (
+            "ℹ️ Пока нет сгенерированных Led модулей. Используйте кнопку «Сгенерировать Led модуль»."
+        )
     await message.answer(
         "⚙️ Настройки склада → Электрика → Led модули → Led модули baza.\n\n"
+        f"{generated_text}\n\n"
         "Выберите действие, чтобы управлять базой Led модулей.",
         reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
     )
@@ -4235,38 +4266,11 @@ async def handle_warehouse_electrics_led_modules(
 @dp.message(F.text == WAREHOUSE_LED_MODULES_ADD_TEXT)
 async def handle_add_warehouse_led_modules(message: Message, state: FSMContext) -> None:
     await state.clear()
-    modules = await fetch_generated_led_modules_with_details()
-    if not modules:
-        await message.answer(
-            "ℹ️ Пока нет сгенерированных Led модулей. Используйте настройку «Сгенерировать Led модуль».",
-            reply_markup=WAREHOUSE_LED_MODULES_KB,
-        )
-        return
-    lines = []
-    for module in modules:
-        article = module.get("article", "—")
-        manufacturer = module.get("manufacturer", "—")
-        series = module.get("series", "—")
-        color = module.get("color", "—")
-        lens_count = module.get("lens_count")
-        power = module.get("power", "—")
-        voltage = module.get("voltage", "—")
-        lens_text = "—" if lens_count is None else str(lens_count)
-        lines.append(
-            " | ".join(
-                [
-                    f"Артикул: {article}",
-                    f"Производитель: {manufacturer}",
-                    f"Серия: {series}",
-                    f"Цвет: {color}",
-                    f"Линз: {lens_text}",
-                    f"Мощность: {power}",
-                    f"Напряжение: {voltage}",
-                ]
-            )
-        )
-    text = "📋 Уже сгенерированные Led модули:\n" + "\n".join(lines)
-    await message.answer(text, reply_markup=WAREHOUSE_LED_MODULES_KB)
+    await message.answer(
+        "ℹ️ Используйте раздел «⚙️ Настройки склада → Электрика → Led модули → Led модули baza», "
+        "чтобы сгенерировать новые Led модули для базы.",
+        reply_markup=WAREHOUSE_LED_MODULES_KB,
+    )
 
 
 @dp.message(F.text == WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT)
