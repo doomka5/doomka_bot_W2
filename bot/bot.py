@@ -1318,6 +1318,33 @@ async def fetch_led_module_voltage_options() -> list[str]:
     return [row["name"] for row in rows]
 
 
+async def fetch_generated_led_modules_with_details() -> list[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                glm.article,
+                manufacturer.name AS manufacturer,
+                series.name AS series,
+                color.name AS color,
+                lens.value AS lens_count,
+                power.name AS power,
+                voltage.name AS voltage
+            FROM generated_led_modules AS glm
+            JOIN led_module_manufacturers AS manufacturer ON manufacturer.id = glm.manufacturer_id
+            JOIN led_module_series AS series ON series.id = glm.series_id
+            JOIN led_module_colors AS color ON color.id = glm.color_id
+            JOIN led_module_lens_counts AS lens ON lens.id = glm.lens_count_id
+            JOIN led_module_power_options AS power ON power.id = glm.power_option_id
+            JOIN led_module_voltage_options AS voltage ON voltage.id = glm.voltage_option_id
+            ORDER BY glm.created_at DESC NULLS LAST, glm.id DESC
+            """
+        )
+    return [dict(row) for row in rows]
+
+
 async def fetch_led_module_lens_counts() -> list[int]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -4208,10 +4235,38 @@ async def handle_warehouse_electrics_led_modules(
 @dp.message(F.text == WAREHOUSE_LED_MODULES_ADD_TEXT)
 async def handle_add_warehouse_led_modules(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(
-        "➕ Добавление Led модулей находится в разработке.",
-        reply_markup=WAREHOUSE_LED_MODULES_KB,
-    )
+    modules = await fetch_generated_led_modules_with_details()
+    if not modules:
+        await message.answer(
+            "ℹ️ Пока нет сгенерированных Led модулей. Используйте настройку «Сгенерировать Led модуль».",
+            reply_markup=WAREHOUSE_LED_MODULES_KB,
+        )
+        return
+    lines = []
+    for module in modules:
+        article = module.get("article", "—")
+        manufacturer = module.get("manufacturer", "—")
+        series = module.get("series", "—")
+        color = module.get("color", "—")
+        lens_count = module.get("lens_count")
+        power = module.get("power", "—")
+        voltage = module.get("voltage", "—")
+        lens_text = "—" if lens_count is None else str(lens_count)
+        lines.append(
+            " | ".join(
+                [
+                    f"Артикул: {article}",
+                    f"Производитель: {manufacturer}",
+                    f"Серия: {series}",
+                    f"Цвет: {color}",
+                    f"Линз: {lens_text}",
+                    f"Мощность: {power}",
+                    f"Напряжение: {voltage}",
+                ]
+            )
+        )
+    text = "📋 Уже сгенерированные Led модули:\n" + "\n".join(lines)
+    await message.answer(text, reply_markup=WAREHOUSE_LED_MODULES_KB)
 
 
 @dp.message(F.text == WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT)
