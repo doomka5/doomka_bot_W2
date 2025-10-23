@@ -394,6 +394,28 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS clients (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    phone TEXT,
+                    contact_person TEXT,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_addresses (
+                    id SERIAL PRIMARY KEY,
+                    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                    address TEXT,
+                    google_maps_link TEXT,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS warehouse_films (
                     id SERIAL PRIMARY KEY,
                     article TEXT NOT NULL,
@@ -656,6 +678,14 @@ class SearchWarehousePlasticStates(StatesGroup):
     waiting_for_color = State()
     waiting_for_min_length = State()
     waiting_for_min_width = State()
+
+
+class AddClientStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_phone = State()
+    waiting_for_contact_person = State()
+    waiting_for_address = State()
+    waiting_for_map_link = State()
 
 
 class CommentWarehousePlasticStates(StatesGroup):
@@ -1109,6 +1139,13 @@ async def _cancel_add_user_flow(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _cancel_add_client_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Добавление клиента отменено.", reply_markup=CLIENTS_MENU_KB
+    )
+
+
 async def _cancel_add_plastic_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -1242,6 +1279,48 @@ async def fetch_all_users_from_db() -> list[Dict[str, Any]]:
             """
         )
     return [dict(row) for row in rows]
+
+
+async def create_client_in_db(
+    name: str,
+    phone: Optional[str] = None,
+    contact_person: Optional[str] = None,
+) -> int:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO clients (name, phone, contact_person)
+            VALUES ($1, $2, $3)
+            RETURNING id
+            """,
+            name,
+            phone,
+            contact_person,
+        )
+    return int(row["id"])
+
+
+async def add_client_address_in_db(
+    client_id: int,
+    address: Optional[str] = None,
+    google_maps_link: Optional[str] = None,
+) -> int:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO client_addresses (client_id, address, google_maps_link)
+            VALUES ($1, $2, $3)
+            RETURNING id
+            """,
+            client_id,
+            address,
+            google_maps_link,
+        )
+    return int(row["id"])
 
 
 async def fetch_plastic_material_types() -> list[str]:
@@ -4486,9 +4565,149 @@ async def handle_clients_section(message: Message) -> None:
 
 
 @dp.message(F.text == CLIENTS_ADD_CLIENT_TEXT)
-async def handle_clients_add(message: Message) -> None:
+async def handle_clients_add(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(AddClientStates.waiting_for_name)
     await message.answer(
-        "➕ Добавление клиента находится в разработке.",
+        "Введите название клиента:",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddClientStates.waiting_for_name)
+async def process_add_client_name(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_client_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Название клиента не может быть пустым. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(name=text)
+    await state.set_state(AddClientStates.waiting_for_phone)
+    await message.answer(
+        "Введите телефон клиента или нажмите «Пропустить»:",
+        reply_markup=SKIP_OR_CANCEL_KB,
+    )
+
+
+@dp.message(AddClientStates.waiting_for_phone)
+async def process_add_client_phone(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_client_flow(message, state)
+        return
+    phone: Optional[str]
+    if text == SKIP_TEXT or not text:
+        phone = None
+    else:
+        phone = text
+    await state.update_data(phone=phone)
+    await state.set_state(AddClientStates.waiting_for_contact_person)
+    await message.answer(
+        "Введите контактное лицо или нажмите «Пропустить»:",
+        reply_markup=SKIP_OR_CANCEL_KB,
+    )
+
+
+@dp.message(AddClientStates.waiting_for_contact_person)
+async def process_add_client_contact_person(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_client_flow(message, state)
+        return
+    contact_person: Optional[str]
+    if text == SKIP_TEXT or not text:
+        contact_person = None
+    else:
+        contact_person = text
+    await state.update_data(contact_person=contact_person)
+    await state.set_state(AddClientStates.waiting_for_address)
+    await message.answer(
+        "Введите адрес клиента или нажмите «Пропустить»:",
+        reply_markup=SKIP_OR_CANCEL_KB,
+    )
+
+
+@dp.message(AddClientStates.waiting_for_address)
+async def process_add_client_address(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_client_flow(message, state)
+        return
+    address: Optional[str]
+    if text == SKIP_TEXT or not text:
+        address = None
+    else:
+        address = text
+    await state.update_data(address=address)
+    await state.set_state(AddClientStates.waiting_for_map_link)
+    await message.answer(
+        "Добавьте ссылку на Google Карты или нажмите «Пропустить»:",
+        reply_markup=SKIP_OR_CANCEL_KB,
+    )
+
+
+@dp.message(AddClientStates.waiting_for_map_link)
+async def process_add_client_map_link(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_client_flow(message, state)
+        return
+    map_link: Optional[str]
+    if text == SKIP_TEXT or not text:
+        map_link = None
+    else:
+        map_link = text
+    data = await state.get_data()
+    name = data.get("name")
+    phone = data.get("phone")
+    contact_person = data.get("contact_person")
+    address = data.get("address")
+    if not name:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось получить данные клиента. Попробуйте начать заново.",
+            reply_markup=CLIENTS_MENU_KB,
+        )
+        return
+    try:
+        client_id = await create_client_in_db(
+            name=name,
+            phone=phone,
+            contact_person=contact_person,
+        )
+        if address is not None or map_link is not None:
+            await add_client_address_in_db(
+                client_id=client_id,
+                address=address,
+                google_maps_link=map_link,
+            )
+    except Exception as exc:
+        logging.exception("Failed to add client")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить клиента. Попробуйте позже.\n"
+            f"Техническая информация: {exc}",
+            reply_markup=CLIENTS_MENU_KB,
+        )
+        return
+
+    await state.clear()
+    phone_text = phone or "—"
+    contact_text = contact_person or "—"
+    address_text = address or "—"
+    map_text = map_link or "—"
+    await message.answer(
+        "✅ Клиент добавлен.\n"
+        f"🏢 Название: {name}\n"
+        f"📞 Телефон: {phone_text}\n"
+        f"👤 Контактное лицо: {contact_text}\n"
+        f"📍 Адрес: {address_text}\n"
+        f"🔗 Google Карты: {map_text}",
         reply_markup=CLIENTS_MENU_KB,
     )
 

@@ -203,6 +203,28 @@ async def startup():
     )
     await conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS clients (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            phone TEXT,
+            contact_person TEXT,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_addresses (
+            id SERIAL PRIMARY KEY,
+            client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            address TEXT,
+            google_maps_link TEXT,
+            created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+        )
+        """
+    )
+    await conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS warehouse_films (
             id SERIAL PRIMARY KEY,
             article TEXT NOT NULL,
