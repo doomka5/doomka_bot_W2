@@ -680,6 +680,10 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
             KeyboardButton(text="🏢 Склад"),
             KeyboardButton(text="⚙️ Настройки"),
         ],
+        [
+            KeyboardButton(text="Клиенты"),
+            KeyboardButton(text="Заказы"),
+        ],
     ],
     resize_keyboard=True,
 )
@@ -4462,6 +4466,20 @@ async def process_add_user_created_at(message: Message, state: FSMContext) -> No
 @dp.message(F.text == "⬅️ Главное меню")
 async def handle_back_to_main(message: Message) -> None:
     await message.answer("Главное меню.", reply_markup=MAIN_MENU_KB)
+
+
+@dp.message(F.text == "Клиенты")
+async def handle_clients_section(message: Message) -> None:
+    await message.answer(
+        "👥 Раздел «Клиенты» находится в разработке.", reply_markup=MAIN_MENU_KB
+    )
+
+
+@dp.message(F.text == "Заказы")
+async def handle_orders_section(message: Message) -> None:
+    await message.answer(
+        "🧾 Раздел «Заказы» находится в разработке.", reply_markup=MAIN_MENU_KB
+    )
 
 
 @dp.message(F.text == "⬅️ Назад в настройки")
