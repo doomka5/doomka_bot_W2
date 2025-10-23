@@ -724,12 +724,34 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
 
 ORDERS_NEW_ORDER_TEXT = "🆕 Новый заказ"
 ORDERS_SETTINGS_TEXT = "⚙️ Настройки заказов"
+ORDERS_SETTINGS_ORDER_TYPE_TEXT = "🗂️ Тип заказа"
+ORDERS_SETTINGS_BACK_TEXT = "⬅️ Назад к заказам"
+ORDER_TYPE_ADD_TEXT = "➕ Добавить тип заказа"
+ORDER_TYPE_DELETE_TEXT = "➖ Удалить тип заказа"
+ORDER_TYPE_BACK_TEXT = "⬅️ Назад к настройкам заказов"
 
 ORDERS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=ORDERS_NEW_ORDER_TEXT)],
         [KeyboardButton(text=ORDERS_SETTINGS_TEXT)],
         [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
+ORDERS_SETTINGS_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=ORDERS_SETTINGS_ORDER_TYPE_TEXT)],
+        [KeyboardButton(text=ORDERS_SETTINGS_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+ORDERS_ORDER_TYPE_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=ORDER_TYPE_ADD_TEXT)],
+        [KeyboardButton(text=ORDER_TYPE_DELETE_TEXT)],
+        [KeyboardButton(text=ORDER_TYPE_BACK_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -4884,7 +4906,48 @@ async def handle_orders_new_order(message: Message) -> None:
 @dp.message(F.text == ORDERS_SETTINGS_TEXT)
 async def handle_orders_settings(message: Message) -> None:
     await message.answer(
-        "⚙️ Настройки заказов пока находятся в разработке.",
+        "⚙️ Настройки заказов. Выберите категорию:",
+        reply_markup=ORDERS_SETTINGS_KB,
+    )
+
+
+@dp.message(F.text == ORDERS_SETTINGS_ORDER_TYPE_TEXT)
+async def handle_orders_settings_order_type(message: Message) -> None:
+    await message.answer(
+        "📁 Настройки заказов → Тип заказа.\n\n"
+        "Используйте кнопки ниже, чтобы управлять типами заказов.",
+        reply_markup=ORDERS_ORDER_TYPE_KB,
+    )
+
+
+@dp.message(F.text == ORDER_TYPE_ADD_TEXT)
+async def handle_order_type_add(message: Message) -> None:
+    await message.answer(
+        "➕ Добавление типов заказов находится в разработке.",
+        reply_markup=ORDERS_ORDER_TYPE_KB,
+    )
+
+
+@dp.message(F.text == ORDER_TYPE_DELETE_TEXT)
+async def handle_order_type_delete(message: Message) -> None:
+    await message.answer(
+        "➖ Удаление типов заказов находится в разработке.",
+        reply_markup=ORDERS_ORDER_TYPE_KB,
+    )
+
+
+@dp.message(F.text == ORDER_TYPE_BACK_TEXT)
+async def handle_back_to_orders_settings(message: Message) -> None:
+    await message.answer(
+        "⚙️ Настройки заказов. Выберите категорию:",
+        reply_markup=ORDERS_SETTINGS_KB,
+    )
+
+
+@dp.message(F.text == ORDERS_SETTINGS_BACK_TEXT)
+async def handle_back_to_orders(message: Message) -> None:
+    await message.answer(
+        "🧾 Раздел «Заказы». Выберите действие:",
         reply_markup=ORDERS_MENU_KB,
     )
 
