@@ -425,6 +425,29 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE SEQUENCE IF NOT EXISTS order_number_seq START 1
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS orders (
+                    id SERIAL PRIMARY KEY,
+                    order_number INTEGER NOT NULL UNIQUE DEFAULT nextval('order_number_seq'),
+                    client_id INTEGER NOT NULL REFERENCES clients(id),
+                    client_name TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    order_type TEXT NOT NULL,
+                    folder_path TEXT NOT NULL,
+                    due_date DATE NOT NULL,
+                    is_urgent BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
+                    created_by_id BIGINT,
+                    created_by_name TEXT
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS warehouse_films (
                     id SERIAL PRIMARY KEY,
                     article TEXT NOT NULL,
@@ -703,6 +726,16 @@ class AddClientStates(StatesGroup):
 
 class SearchClientStates(StatesGroup):
     waiting_for_query = State()
+
+
+class CreateOrderStates(StatesGroup):
+    waiting_for_client_query = State()
+    waiting_for_client_selection = State()
+    waiting_for_order_name = State()
+    waiting_for_order_type = State()
+    waiting_for_folder_path = State()
+    waiting_for_due_date = State()
+    waiting_for_urgency = State()
 
 
 class CommentWarehousePlasticStates(StatesGroup):
@@ -1177,6 +1210,20 @@ SKIP_OR_CANCEL_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+ORDER_URGENCY_YES_TEXT = "Да"
+ORDER_URGENCY_NO_TEXT = "Нет"
+
+ORDER_URGENCY_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [
+            KeyboardButton(text=ORDER_URGENCY_YES_TEXT),
+            KeyboardButton(text=ORDER_URGENCY_NO_TEXT),
+        ],
+        [KeyboardButton(text=CANCEL_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
 
 async def _process_cancel_if_requested(message: Message, state: FSMContext) -> bool:
     if (message.text or "").strip() != CANCEL_TEXT:
@@ -1203,6 +1250,13 @@ async def _cancel_search_client_flow(message: Message, state: FSMContext) -> Non
     await state.clear()
     await message.answer(
         "❌ Поиск клиента отменён.", reply_markup=CLIENTS_MENU_KB
+    )
+
+
+async def _cancel_create_order_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Создание заказа отменено.", reply_markup=ORDERS_MENU_KB
     )
 
 
@@ -1449,6 +1503,63 @@ async def fetch_order_types() -> list[str]:
             "SELECT name FROM order_types ORDER BY LOWER(name)"
         )
     return [row["name"] for row in rows]
+
+
+async def fetch_next_order_number() -> int:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT COALESCE(MAX(order_number), 0) + 1 AS next_number FROM orders"
+        )
+    return int(row["next_number"] or 1)
+
+
+async def create_order_in_db(
+    client_id: int,
+    client_name: str,
+    title: str,
+    order_type: str,
+    folder_path: str,
+    due_date: date,
+    is_urgent: bool,
+    created_by_id: Optional[int],
+    created_by_name: Optional[str],
+) -> Dict[str, Any]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO orders (
+                client_id,
+                client_name,
+                title,
+                order_type,
+                folder_path,
+                due_date,
+                is_urgent,
+                created_by_id,
+                created_by_name
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, order_number, client_id, client_name, title, order_type,
+                      folder_path, due_date, is_urgent, created_at, created_by_id,
+                      created_by_name
+            """,
+            client_id,
+            client_name,
+            title,
+            order_type,
+            folder_path,
+            due_date,
+            is_urgent,
+            created_by_id,
+            created_by_name,
+        )
+    if row is None:
+        raise RuntimeError("Failed to insert order")
+    return dict(row)
 
 
 async def fetch_plastic_material_types() -> list[str]:
@@ -3554,6 +3665,24 @@ def _format_datetime(value: Optional[datetime]) -> str:
     return localised.strftime("%Y-%m-%d %H:%M")
 
 
+def _format_date(value: Optional[date]) -> str:
+    if value is None:
+        return "—"
+    return value.strftime("%d.%m.%Y")
+
+
+def _parse_due_date_input(value: str) -> Optional[date]:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _decimal_to_excel_number(value: Optional[Decimal]) -> Optional[float]:
     if value is None:
         return None
@@ -4940,12 +5069,363 @@ async def handle_orders_section(message: Message) -> None:
     )
 
 
-@dp.message(F.text == ORDERS_NEW_ORDER_TEXT)
-async def handle_orders_new_order(message: Message) -> None:
-    await message.answer(
-        "🆕 Создание новых заказов пока находится в разработке.",
-        reply_markup=ORDERS_MENU_KB,
+def _format_client_search_results_for_order(
+    clients: list[Dict[str, Any]],
+    has_more: bool,
+) -> str:
+    result_lines = ["🔎 Найденные заказчики:", ""]
+    formatted_entries: list[str] = []
+    for index, client in enumerate(clients, start=1):
+        entry_lines = [f"{index}. {client['name']}"]
+        contact_person = (client.get("contact_person") or "").strip()
+        phone = (client.get("phone") or "").strip()
+        if contact_person:
+            entry_lines.append(f"   👤 Контакт: {contact_person}")
+        if phone:
+            entry_lines.append(f"   📞 Телефон: {phone}")
+        addresses = client.get("addresses") or []
+        if addresses:
+            first_address = addresses[0]
+            address_value = (first_address.get("address") or "").strip()
+            if address_value:
+                entry_lines.append(f"   📍 Адрес: {address_value}")
+        formatted_entries.append("\n".join(entry_lines))
+    result_lines.append("\n\n".join(formatted_entries))
+    if has_more:
+        result_lines.extend(
+            [
+                "",
+                "ℹ️ Показаны первые совпадения. Уточните запрос для более точного результата.",
+            ]
+        )
+    result_lines.extend(
+        [
+            "",
+            "Отправьте номер подходящего заказчика или введите новый запрос для поиска.",
+        ]
     )
+    return "\n".join(result_lines)
+
+
+def _build_order_summary_message(
+    order_row: Dict[str, Any],
+    client_details: Dict[str, Any],
+) -> str:
+    due_date_text = _format_date(order_row.get("due_date"))
+    created_text = _format_datetime(order_row.get("created_at"))
+    is_urgent = bool(order_row.get("is_urgent"))
+    creator_name = order_row.get("created_by_name")
+    if not creator_name:
+        creator_id = order_row.get("created_by_id")
+        creator_name = f"ID: {creator_id}" if creator_id else "—"
+    client_lines = [f"🏢 Заказчик: {client_details['name']}"]
+    contact_person = (client_details.get("contact_person") or "").strip()
+    phone = (client_details.get("phone") or "").strip()
+    if contact_person:
+        client_lines.append(f"👤 Контактное лицо: {contact_person}")
+    if phone:
+        client_lines.append(f"📞 Телефон: {phone}")
+    summary_lines = [
+        f"✅ Заказ №{order_row['order_number']} создан.",
+        "",
+        "\n".join(client_lines),
+        "",
+        f"📝 Название: {order_row['title']}",
+        f"🗂️ Тип заказа: {order_row['order_type']}",
+        f"📂 Папка: {order_row['folder_path']}",
+        f"📅 Срок выполнения: {due_date_text}",
+        f"🔥 Срочный: {'Да' if is_urgent else 'Нет'}",
+        "",
+        f"🕒 Создано: {created_text}",
+        f"✍️ Создал: {creator_name}",
+    ]
+    return "\n".join(summary_lines)
+
+
+async def _send_client_search_prompt(
+    message: Message,
+    state: FSMContext,
+    query: str,
+) -> None:
+    matches, has_more = await search_clients_by_name(query)
+    if not matches:
+        await message.answer(
+            "ℹ️ Заказчики с таким названием не найдены. Попробуйте другой запрос.",
+            reply_markup=CANCEL_KB,
+        )
+        await state.set_state(CreateOrderStates.waiting_for_client_query)
+        return
+    await state.update_data(client_search_results=matches)
+    await state.set_state(CreateOrderStates.waiting_for_client_selection)
+    await message.answer(
+        _format_client_search_results_for_order(matches, has_more),
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(F.text == ORDERS_NEW_ORDER_TEXT)
+async def handle_orders_new_order(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    order_types = await fetch_order_types()
+    if not order_types:
+        await message.answer(
+            "ℹ️ Сначала добавьте хотя бы один тип заказа в разделе «⚙️ Настройки заказов».",
+            reply_markup=ORDERS_MENU_KB,
+        )
+        return
+    next_number = await fetch_next_order_number()
+    await state.update_data(order_number_hint=next_number)
+    await state.set_state(CreateOrderStates.waiting_for_client_query)
+    await message.answer(
+        (
+            f"🆕 Создание заказа №{next_number}.\n"
+            "Введите не менее двух символов названия заказчика, чтобы найти его в базе."
+        ),
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(CreateOrderStates.waiting_for_client_query)
+async def process_order_client_query(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_order_flow(message, state)
+        return
+    if len(text) < 2:
+        await message.answer(
+            "⚠️ Введите минимум два символа для поиска заказчика.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await _send_client_search_prompt(message, state, text)
+
+
+@dp.message(CreateOrderStates.waiting_for_client_selection)
+async def process_order_client_selection(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_order_flow(message, state)
+        return
+    data = await state.get_data()
+    candidates = data.get("client_search_results") or []
+    if text.isdigit():
+        selected_index = int(text)
+        if 1 <= selected_index <= len(candidates):
+            selected_client = candidates[selected_index - 1]
+            await state.update_data(
+                selected_client={
+                    "id": selected_client["id"],
+                    "name": selected_client["name"],
+                    "phone": selected_client.get("phone"),
+                    "contact_person": selected_client.get("contact_person"),
+                },
+                client_search_results=None,
+            )
+            await state.set_state(CreateOrderStates.waiting_for_order_name)
+            await message.answer(
+                (
+                    f"✅ Заказчик «{selected_client['name']}» выбран.\n"
+                    "Теперь введите название заказа."
+                ),
+                reply_markup=CANCEL_KB,
+            )
+            return
+    if len(text) >= 2:
+        await _send_client_search_prompt(message, state, text)
+        return
+    await message.answer(
+        "ℹ️ Укажите номер из списка или введите новый запрос (минимум два символа).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(CreateOrderStates.waiting_for_order_name)
+async def process_order_name(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_order_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Название заказа не может быть пустым. Укажите название.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(order_name=text)
+    order_types = await fetch_order_types()
+    if not order_types:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Список типов заказов пуст. Добавьте типы и начните заново.",
+            reply_markup=ORDERS_MENU_KB,
+        )
+        return
+    await state.update_data(order_type_options=order_types)
+    options_lines = [f"{index}. {name}" for index, name in enumerate(order_types, start=1)]
+    prompt_lines = [
+        "Выберите тип заказа из списка:",
+        "",
+        "\n".join(options_lines),
+        "",
+        "Отправьте номер или название типа заказа.",
+    ]
+    await state.set_state(CreateOrderStates.waiting_for_order_type)
+    await message.answer("\n".join(prompt_lines), reply_markup=CANCEL_KB)
+
+
+@dp.message(CreateOrderStates.waiting_for_order_type)
+async def process_order_type(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_order_flow(message, state)
+        return
+    data = await state.get_data()
+    order_types = data.get("order_type_options") or []
+    if not order_types:
+        order_types = await fetch_order_types()
+        if not order_types:
+            await state.clear()
+            await message.answer(
+                "ℹ️ Список типов заказов пуст. Добавьте типы и начните заново.",
+                reply_markup=ORDERS_MENU_KB,
+            )
+            return
+        await state.update_data(order_type_options=order_types)
+    selected_type: Optional[str] = None
+    if text.isdigit():
+        index = int(text)
+        if 1 <= index <= len(order_types):
+            selected_type = order_types[index - 1]
+    else:
+        lowered = text.lower()
+        for option in order_types:
+            if option.lower() == lowered:
+                selected_type = option
+                break
+    if not selected_type:
+        options_lines = "\n".join(
+            f"{index}. {name}" for index, name in enumerate(order_types, start=1)
+        )
+        await message.answer(
+            (
+                "⚠️ Не удалось распознать тип заказа.\n"
+                "Выберите номер из списка или укажите точное название.\n\n"
+                f"Доступные варианты:\n{options_lines}"
+            ),
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(order_type=selected_type)
+    await state.set_state(CreateOrderStates.waiting_for_folder_path)
+    await message.answer(
+        "Укажите путь к папке заказа (например, сетевой путь или каталог на диске).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(CreateOrderStates.waiting_for_folder_path)
+async def process_order_folder_path(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_order_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Путь к папке не может быть пустым. Укажите путь.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(order_folder_path=text)
+    await state.set_state(CreateOrderStates.waiting_for_due_date)
+    await message.answer(
+        "Укажите дату, когда заказ должен быть выполнен (формат ДД.ММ.ГГГГ).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(CreateOrderStates.waiting_for_due_date)
+async def process_order_due_date(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_order_flow(message, state)
+        return
+    due_date = _parse_due_date_input(text)
+    if not due_date:
+        await message.answer(
+            "⚠️ Не удалось распознать дату. Укажите дату в формате ДД.ММ.ГГГГ.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(order_due_date=due_date)
+    await state.set_state(CreateOrderStates.waiting_for_urgency)
+    await message.answer(
+        "Это срочный заказ? Ответьте «Да» или «Нет».",
+        reply_markup=ORDER_URGENCY_KB,
+    )
+
+
+@dp.message(CreateOrderStates.waiting_for_urgency)
+async def process_order_urgency(message: Message, state: FSMContext) -> None:
+    text_raw = message.text or ""
+    text = text_raw.strip().lower()
+    if text_raw.strip() == CANCEL_TEXT:
+        await _cancel_create_order_flow(message, state)
+        return
+    if text in {ORDER_URGENCY_YES_TEXT.lower(), "yes", "y"}:
+        is_urgent = True
+    elif text in {ORDER_URGENCY_NO_TEXT.lower(), "no", "n"}:
+        is_urgent = False
+    else:
+        await message.answer(
+            "⚠️ Ответ не распознан. Укажите «Да» или «Нет».",
+            reply_markup=ORDER_URGENCY_KB,
+        )
+        return
+    data = await state.get_data()
+    selected_client = data.get("selected_client")
+    if not selected_client:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Не удалось определить выбранного заказчика. Попробуйте создать заказ заново.",
+            reply_markup=ORDERS_MENU_KB,
+        )
+        return
+    order_name = data.get("order_name")
+    order_type = data.get("order_type")
+    folder_path = data.get("order_folder_path")
+    due_date = data.get("order_due_date")
+    if not all([order_name, order_type, folder_path, due_date]):
+        await state.clear()
+        await message.answer(
+            "ℹ️ Данные заказа неполные. Попробуйте создать заказ заново.",
+            reply_markup=ORDERS_MENU_KB,
+        )
+        return
+    creator_id = message.from_user.id if message.from_user else None
+    creator_name = message.from_user.full_name if message.from_user else None
+    try:
+        order_row = await create_order_in_db(
+            client_id=int(selected_client["id"]),
+            client_name=selected_client["name"],
+            title=order_name,
+            order_type=order_type,
+            folder_path=folder_path,
+            due_date=due_date,
+            is_urgent=is_urgent,
+            created_by_id=creator_id,
+            created_by_name=creator_name,
+        )
+    except Exception:
+        logging.exception("Failed to create order")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить заказ. Попробуйте позже.",
+            reply_markup=ORDERS_MENU_KB,
+        )
+        return
+    await state.clear()
+    summary = _build_order_summary_message(order_row, selected_client)
+    await message.answer(summary, reply_markup=ORDERS_MENU_KB)
 
 
 @dp.message(F.text == ORDERS_SETTINGS_TEXT)
