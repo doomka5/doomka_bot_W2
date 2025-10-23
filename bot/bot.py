@@ -394,6 +394,15 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS order_types (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS clients (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -512,6 +521,10 @@ class AddUserStates(StatesGroup):
     waiting_for_position = State()
     waiting_for_role = State()
     waiting_for_created_at = State()
+
+
+class ManageOrderTypeStates(StatesGroup):
+    waiting_for_new_type_name = State()
 
 
 class ManagePlasticMaterialStates(StatesGroup):
@@ -1428,6 +1441,16 @@ async def search_clients_by_name(
     return results, has_more
 
 
+async def fetch_order_types() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM order_types ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
 async def fetch_plastic_material_types() -> list[str]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -2072,6 +2095,22 @@ async def fetch_max_film_article() -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+async def insert_order_type(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO order_types (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
 
 
 async def insert_plastic_material_type(name: str) -> bool:
@@ -3499,6 +3538,12 @@ def format_materials_list(materials: list[str]) -> str:
     return "\n".join(f"• {item}" for item in materials)
 
 
+def format_order_types_list(order_types: list[str]) -> str:
+    if not order_types:
+        return "—"
+    return "\n".join(f"• {name}" for name in order_types)
+
+
 def _format_datetime(value: Optional[datetime]) -> str:
     if value is None:
         return "—"
@@ -4911,29 +4956,82 @@ async def handle_orders_settings(message: Message) -> None:
     )
 
 
+async def send_order_type_settings_overview(message: Message) -> None:
+    order_types = await fetch_order_types()
+    lines = ["📁 Настройки заказов → Тип заказа.", ""]
+    if order_types:
+        lines.extend(
+            [
+                "Сейчас доступны типы заказов:",
+                format_order_types_list(order_types),
+                "",
+                "Используйте кнопки ниже, чтобы управлять типами.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "Типы заказов ещё не добавлены.",
+                "Используйте кнопку «➕ Добавить тип заказа», чтобы создать первый тип.",
+            ]
+        )
+    await message.answer("\n".join(lines), reply_markup=ORDERS_ORDER_TYPE_KB)
+
+
 @dp.message(F.text == ORDERS_SETTINGS_ORDER_TYPE_TEXT)
 async def handle_orders_settings_order_type(message: Message) -> None:
-    await message.answer(
-        "📁 Настройки заказов → Тип заказа.\n\n"
-        "Используйте кнопки ниже, чтобы управлять типами заказов.",
-        reply_markup=ORDERS_ORDER_TYPE_KB,
-    )
+    await send_order_type_settings_overview(message)
 
 
 @dp.message(F.text == ORDER_TYPE_ADD_TEXT)
-async def handle_order_type_add(message: Message) -> None:
-    await message.answer(
-        "➕ Добавление типов заказов находится в разработке.",
-        reply_markup=ORDERS_ORDER_TYPE_KB,
-    )
+async def handle_order_type_add(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageOrderTypeStates.waiting_for_new_type_name)
+    order_types = await fetch_order_types()
+    prompt_lines = ["Введите название нового типа заказа."]
+    if order_types:
+        prompt_lines.extend(
+            [
+                "",
+                "Уже добавлены:",
+                format_order_types_list(order_types),
+            ]
+        )
+    else:
+        prompt_lines.extend(
+            [
+                "",
+                "Пока ещё не добавлено ни одного типа заказа.",
+            ]
+        )
+    await message.answer("\n".join(prompt_lines), reply_markup=CANCEL_KB)
 
 
 @dp.message(F.text == ORDER_TYPE_DELETE_TEXT)
 async def handle_order_type_delete(message: Message) -> None:
+    if not await ensure_admin_access(message):
+        return
     await message.answer(
         "➖ Удаление типов заказов находится в разработке.",
         reply_markup=ORDERS_ORDER_TYPE_KB,
     )
+
+
+@dp.message(ManageOrderTypeStates.waiting_for_new_type_name)
+async def process_new_order_type(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_order_type(name):
+        await message.answer(f"✅ Тип заказа «{name}» добавлен.")
+    else:
+        await message.answer(f"ℹ️ Тип заказа «{name}» уже есть в списке.")
+    await state.clear()
+    await send_order_type_settings_overview(message)
 
 
 @dp.message(F.text == ORDER_TYPE_BACK_TEXT)
@@ -9840,6 +9938,12 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     ):
         await state.clear()
         await send_film_settings_overview(message)
+        return
+    if current_state and current_state.startswith(
+        ManageOrderTypeStates.__name__
+    ):
+        await state.clear()
+        await send_order_type_settings_overview(message)
         return
     if current_state and current_state.startswith(
         ManageFilmSeriesStates.__name__
