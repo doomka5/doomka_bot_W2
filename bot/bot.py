@@ -722,6 +722,18 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+ORDERS_NEW_ORDER_TEXT = "🆕 Новый заказ"
+ORDERS_SETTINGS_TEXT = "⚙️ Настройки заказов"
+
+ORDERS_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=ORDERS_NEW_ORDER_TEXT)],
+        [KeyboardButton(text=ORDERS_SETTINGS_TEXT)],
+        [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
 CLIENTS_ADD_CLIENT_TEXT = "➕ Добавить клиента"
 CLIENTS_SEARCH_CLIENT_TEXT = "🔍 Поиск клиента"
 
@@ -4857,7 +4869,23 @@ async def process_clients_search_query(message: Message, state: FSMContext) -> N
 @dp.message(F.text == "Заказы")
 async def handle_orders_section(message: Message) -> None:
     await message.answer(
-        "🧾 Раздел «Заказы» находится в разработке.", reply_markup=MAIN_MENU_KB
+        "🧾 Раздел «Заказы». Выберите действие:", reply_markup=ORDERS_MENU_KB
+    )
+
+
+@dp.message(F.text == ORDERS_NEW_ORDER_TEXT)
+async def handle_orders_new_order(message: Message) -> None:
+    await message.answer(
+        "🆕 Создание новых заказов пока находится в разработке.",
+        reply_markup=ORDERS_MENU_KB,
+    )
+
+
+@dp.message(F.text == ORDERS_SETTINGS_TEXT)
+async def handle_orders_settings(message: Message) -> None:
+    await message.answer(
+        "⚙️ Настройки заказов пока находятся в разработке.",
+        reply_markup=ORDERS_MENU_KB,
     )
 
 
