@@ -10,7 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 import asyncpg
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
@@ -688,6 +688,10 @@ class AddClientStates(StatesGroup):
     waiting_for_map_link = State()
 
 
+class SearchClientStates(StatesGroup):
+    waiting_for_query = State()
+
+
 class CommentWarehousePlasticStates(StatesGroup):
     waiting_for_article = State()
     waiting_for_comment = State()
@@ -719,10 +723,12 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
 )
 
 CLIENTS_ADD_CLIENT_TEXT = "➕ Добавить клиента"
+CLIENTS_SEARCH_CLIENT_TEXT = "🔍 Поиск клиента"
 
 CLIENTS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=CLIENTS_ADD_CLIENT_TEXT)],
+        [KeyboardButton(text=CLIENTS_SEARCH_CLIENT_TEXT)],
         [KeyboardButton(text="⬅️ Главное меню")],
     ],
     resize_keyboard=True,
@@ -1146,6 +1152,13 @@ async def _cancel_add_client_flow(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _cancel_search_client_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Поиск клиента отменён.", reply_markup=CLIENTS_MENU_KB
+    )
+
+
 async def _cancel_add_plastic_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -1321,6 +1334,64 @@ async def add_client_address_in_db(
             google_maps_link,
         )
     return int(row["id"])
+
+
+async def search_clients_by_name(
+    query: str,
+    limit: int = 10,
+) -> Tuple[list[Dict[str, Any]], bool]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        client_rows = await conn.fetch(
+            """
+            SELECT id, name, phone, contact_person
+            FROM clients
+            WHERE name ILIKE $1
+            ORDER BY LOWER(name), id
+            LIMIT $2
+            """,
+            f"%{query}%",
+            limit + 1,
+        )
+        has_more = len(client_rows) > limit
+        trimmed_rows = list(client_rows[:limit])
+        if not trimmed_rows:
+            return [], False
+        client_ids = [row["id"] for row in trimmed_rows]
+        address_rows = await conn.fetch(
+            """
+            SELECT client_id, address, google_maps_link
+            FROM client_addresses
+            WHERE client_id = ANY($1::int[])
+            ORDER BY client_id, created_at DESC NULLS LAST, id DESC
+            """,
+            client_ids,
+        )
+    addresses_map: Dict[int, list[Dict[str, Optional[str]]]] = {}
+    for row in address_rows:
+        address_value = row.get("address")
+        map_link_value = row.get("google_maps_link")
+        if address_value is None and map_link_value is None:
+            continue
+        addresses_map.setdefault(row["client_id"], []).append(
+            {
+                "address": address_value,
+                "google_maps_link": map_link_value,
+            }
+        )
+    results: list[Dict[str, Any]] = []
+    for row in trimmed_rows:
+        results.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "phone": row.get("phone"),
+                "contact_person": row.get("contact_person"),
+                "addresses": addresses_map.get(row["id"], []),
+            }
+        )
+    return results, has_more
 
 
 async def fetch_plastic_material_types() -> list[str]:
@@ -4574,6 +4645,16 @@ async def handle_clients_add(message: Message, state: FSMContext) -> None:
     )
 
 
+@dp.message(F.text == CLIENTS_SEARCH_CLIENT_TEXT)
+async def handle_clients_search(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(SearchClientStates.waiting_for_query)
+    await message.answer(
+        "Введите название клиента или его часть:",
+        reply_markup=CANCEL_KB,
+    )
+
+
 @dp.message(AddClientStates.waiting_for_name)
 async def process_add_client_name(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -4710,6 +4791,67 @@ async def process_add_client_map_link(message: Message, state: FSMContext) -> No
         f"🔗 Google Карты: {map_text}",
         reply_markup=CLIENTS_MENU_KB,
     )
+
+
+@dp.message(SearchClientStates.waiting_for_query)
+async def process_clients_search_query(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_search_client_flow(message, state)
+        return
+    if not text:
+        await message.answer(
+            "⚠️ Название клиента не может быть пустым. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    try:
+        matches, has_more = await search_clients_by_name(text)
+    except Exception as exc:
+        logging.exception("Failed to search clients")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось выполнить поиск клиентов. Попробуйте позже.\n"
+            f"Техническая информация: {exc}",
+            reply_markup=CLIENTS_MENU_KB,
+        )
+        return
+
+    await state.clear()
+    if not matches:
+        await message.answer(
+            "ℹ️ Клиенты с таким названием не найдены.",
+            reply_markup=CLIENTS_MENU_KB,
+        )
+        return
+
+    cards: list[str] = []
+    for client in matches:
+        card_lines = [
+            f"🏢 Название: {client['name']}",
+            f"📞 Телефон: {client.get('phone') or '—'}",
+            f"👤 Контактное лицо: {client.get('contact_person') or '—'}",
+        ]
+        addresses = client.get("addresses") or []
+        if addresses:
+            card_lines.append("📍 Адреса:")
+            for entry in addresses:
+                address_value = entry.get("address") or "—"
+                map_link_value = entry.get("google_maps_link")
+                card_lines.append(f"  • {address_value}")
+                if map_link_value:
+                    card_lines.append(f"    🔗 {map_link_value}")
+        else:
+            card_lines.append("📍 Адрес: —")
+            card_lines.append("🔗 Google Карты: —")
+        cards.append("\n".join(card_lines))
+
+    response_text = "🔎 Результаты поиска:\n\n" + "\n\n".join(cards)
+    if has_more:
+        response_text += (
+            "\n\nℹ️ Показаны первые 10 совпадений. Уточните запрос для более точного результата."
+        )
+    await message.answer(response_text, reply_markup=CLIENTS_MENU_KB)
 
 
 @dp.message(F.text == "Заказы")
