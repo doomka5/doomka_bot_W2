@@ -688,6 +688,16 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+CLIENTS_ADD_CLIENT_TEXT = "➕ Добавить клиента"
+
+CLIENTS_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=CLIENTS_ADD_CLIENT_TEXT)],
+        [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
 SETTINGS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="👥 Пользователи")],
@@ -4471,7 +4481,15 @@ async def handle_back_to_main(message: Message) -> None:
 @dp.message(F.text == "Клиенты")
 async def handle_clients_section(message: Message) -> None:
     await message.answer(
-        "👥 Раздел «Клиенты» находится в разработке.", reply_markup=MAIN_MENU_KB
+        "👥 Раздел «Клиенты». Выберите действие:", reply_markup=CLIENTS_MENU_KB
+    )
+
+
+@dp.message(F.text == CLIENTS_ADD_CLIENT_TEXT)
+async def handle_clients_add(message: Message) -> None:
+    await message.answer(
+        "➕ Добавление клиента находится в разработке.",
+        reply_markup=CLIENTS_MENU_KB,
     )
 
 
