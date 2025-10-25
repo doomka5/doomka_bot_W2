@@ -769,6 +769,7 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
 )
 
 ORDERS_NEW_ORDER_TEXT = "🆕 Новый заказ"
+ORDERS_IN_PROGRESS_TEXT = "📋 Заказы в работе"
 ORDERS_SETTINGS_TEXT = "⚙️ Настройки заказов"
 ORDERS_SETTINGS_ORDER_TYPE_TEXT = "🗂️ Тип заказа"
 ORDERS_SETTINGS_BACK_TEXT = "⬅️ Назад к заказам"
@@ -779,6 +780,7 @@ ORDER_TYPE_BACK_TEXT = "⬅️ Назад к настройкам заказов
 ORDERS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=ORDERS_NEW_ORDER_TEXT)],
+        [KeyboardButton(text=ORDERS_IN_PROGRESS_TEXT)],
         [KeyboardButton(text=ORDERS_SETTINGS_TEXT)],
         [KeyboardButton(text="⬅️ Главное меню")],
     ],
@@ -1513,6 +1515,30 @@ async def fetch_next_order_number() -> int:
             "SELECT COALESCE(MAX(order_number), 0) + 1 AS next_number FROM orders"
         )
     return int(row["next_number"] or 1)
+
+
+async def fetch_all_orders() -> list[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                id,
+                order_number,
+                client_name,
+                title,
+                order_type,
+                folder_path,
+                due_date,
+                is_urgent,
+                created_at,
+                created_by_name
+            FROM orders
+            ORDER BY due_date ASC, order_number ASC
+            """
+        )
+    return [dict(row) for row in rows]
 
 
 async def create_order_in_db(
@@ -5142,6 +5168,35 @@ def _build_order_summary_message(
     return "\n".join(summary_lines)
 
 
+def format_orders_overview(order_rows: list[Dict[str, Any]]) -> str:
+    if not order_rows:
+        return "ℹ️ В таблице заказов пока нет записей."
+
+    overview_lines = ["📋 Заказы в работе:", ""]
+    formatted_entries: list[str] = []
+
+    for index, row in enumerate(order_rows, start=1):
+        due_date_text = _format_date(row.get("due_date"))
+        created_at_text = _format_datetime(row.get("created_at"))
+        responsible = (row.get("created_by_name") or "").strip() or "—"
+        urgency_text = "Да" if row.get("is_urgent") else "Нет"
+
+        entry_lines = [
+            f"{index}. №{row.get('order_number')} — {row.get('title')}",
+            f"   🏢 Заказчик: {row.get('client_name')}",
+            f"   🗂️ Тип: {row.get('order_type')}",
+            f"   📁 Папка: {row.get('folder_path')}",
+            f"   📅 Срок: {due_date_text}",
+            f"   ⚡ Срочный: {urgency_text}",
+            f"   🕒 Создан: {created_at_text}",
+            f"   👤 Ответственный: {responsible}",
+        ]
+        formatted_entries.append("\n".join(entry_lines))
+
+    overview_lines.append("\n\n".join(formatted_entries))
+    return "\n".join(overview_lines)
+
+
 async def _send_client_search_prompt(
     message: Message,
     state: FSMContext,
@@ -5161,6 +5216,22 @@ async def _send_client_search_prompt(
         _format_client_search_results_for_order(matches, has_more),
         reply_markup=CANCEL_KB,
     )
+
+
+@dp.message(F.text == ORDERS_IN_PROGRESS_TEXT)
+async def handle_orders_in_progress(message: Message) -> None:
+    try:
+        orders = await fetch_all_orders()
+    except Exception:
+        logging.exception("Failed to fetch orders overview")
+        await message.answer(
+            "⚠️ Не удалось получить список заказов. Попробуйте позже.",
+            reply_markup=ORDERS_MENU_KB,
+        )
+        return
+
+    overview_text = format_orders_overview(orders)
+    await message.answer(overview_text, reply_markup=ORDERS_MENU_KB)
 
 
 @dp.message(F.text == ORDERS_NEW_ORDER_TEXT)
