@@ -786,10 +786,25 @@ TASKS_MENU_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+TASKS_SETTINGS_TASK_TYPES_TEXT = "🗂️ Виды задач"
+TASK_TYPES_ADD_TEXT = "➕ Добавить вид задачи"
+TASK_TYPES_DELETE_TEXT = "➖ Удалить вид задачи"
+TASK_TYPES_BACK_TEXT = "⬅️ Назад к настройкам задач"
+
 TASKS_SETTINGS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
+        [KeyboardButton(text=TASKS_SETTINGS_TASK_TYPES_TEXT)],
         [KeyboardButton(text=TASKS_SETTINGS_BACK_TEXT)],
         [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
+TASK_TYPES_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=TASK_TYPES_ADD_TEXT)],
+        [KeyboardButton(text=TASK_TYPES_DELETE_TEXT)],
+        [KeyboardButton(text=TASK_TYPES_BACK_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -4914,7 +4929,7 @@ async def handle_tasks_view(message: Message) -> None:
 @dp.message(F.text == TASKS_SETTINGS_TEXT)
 async def handle_tasks_settings(message: Message) -> None:
     await message.answer(
-        "⚙️ Настройки задач пока находятся в разработке.",
+        "⚙️ Настройки задач. Выберите нужный раздел:",
         reply_markup=TASKS_SETTINGS_MENU_KB,
     )
 
@@ -4924,6 +4939,38 @@ async def handle_tasks_settings_back(message: Message) -> None:
     await message.answer(
         "🧠 Раздел «Задачи». Выберите действие:",
         reply_markup=TASKS_MENU_KB,
+    )
+
+
+@dp.message(F.text == TASKS_SETTINGS_TASK_TYPES_TEXT)
+async def handle_task_types_folder(message: Message) -> None:
+    await message.answer(
+        "🗂️ Раздел «Виды задач». Выберите действие:",
+        reply_markup=TASK_TYPES_MENU_KB,
+    )
+
+
+@dp.message(F.text == TASK_TYPES_BACK_TEXT)
+async def handle_task_types_back(message: Message) -> None:
+    await message.answer(
+        "⚙️ Настройки задач. Выберите нужный раздел:",
+        reply_markup=TASKS_SETTINGS_MENU_KB,
+    )
+
+
+@dp.message(F.text == TASK_TYPES_ADD_TEXT)
+async def handle_task_type_add(message: Message) -> None:
+    await message.answer(
+        "➕ Добавление видов задач пока находится в разработке.",
+        reply_markup=TASK_TYPES_MENU_KB,
+    )
+
+
+@dp.message(F.text == TASK_TYPES_DELETE_TEXT)
+async def handle_task_type_delete(message: Message) -> None:
+    await message.answer(
+        "➖ Удаление видов задач пока находится в разработке.",
+        reply_markup=TASK_TYPES_MENU_KB,
     )
 
 
