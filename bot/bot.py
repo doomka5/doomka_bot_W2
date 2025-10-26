@@ -5137,7 +5137,22 @@ def _build_order_summary_message(
     order_row: Dict[str, Any],
     client_details: Dict[str, Any],
 ) -> str:
-    due_date_text = _format_date(order_row.get("due_date"))
+    due_date_raw = order_row.get("due_date")
+    if isinstance(due_date_raw, datetime):
+        due_date_value: Optional[date] = due_date_raw.date()
+    else:
+        due_date_value = due_date_raw
+    due_date_text = _format_date(due_date_value)
+    deadline_line = "⏳ Дедлайн: —"
+    if isinstance(due_date_value, date):
+        today = datetime.now(WARSAW_TZ).date()
+        days_diff = (due_date_value - today).days
+        if days_diff > 0:
+            deadline_line = f"⏳ Дедлайн: осталось {days_diff} дн."
+        elif days_diff == 0:
+            deadline_line = "⏳ Дедлайн: сегодня"
+        else:
+            deadline_line = f"⏳ Дедлайн: просрочка {abs(days_diff)} дн."
     created_text = _format_datetime(order_row.get("created_at"))
     is_urgent = bool(order_row.get("is_urgent"))
     creator_name = order_row.get("created_by_name")
@@ -5160,6 +5175,7 @@ def _build_order_summary_message(
         f"🗂️ Тип заказа: {order_row['order_type']}",
         f"📂 Папка: {order_row['folder_path']}",
         f"📅 Срок выполнения: {due_date_text}",
+        deadline_line,
         f"🔥 Срочный: {'Да' if is_urgent else 'Нет'}",
         "",
         f"🕒 Создано: {created_text}",
