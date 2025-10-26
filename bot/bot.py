@@ -5133,16 +5133,15 @@ def _format_client_search_results_for_order(
     return "\n".join(result_lines)
 
 
-def _build_order_summary_message(
-    order_row: Dict[str, Any],
-    client_details: Dict[str, Any],
-) -> str:
-    due_date_raw = order_row.get("due_date")
-    if isinstance(due_date_raw, datetime):
-        due_date_value: Optional[date] = due_date_raw.date()
-    else:
-        due_date_value = due_date_raw
-    due_date_text = _format_date(due_date_value)
+def _normalize_due_date(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def _format_deadline_line(due_date_value: Optional[date]) -> str:
     deadline_line = "⏳ Дедлайн: —"
     if isinstance(due_date_value, date):
         today = datetime.now(WARSAW_TZ).date()
@@ -5153,6 +5152,16 @@ def _build_order_summary_message(
             deadline_line = "⏳ Дедлайн: сегодня"
         else:
             deadline_line = f"⏳ Дедлайн: просрочка {abs(days_diff)} дн."
+    return deadline_line
+
+
+def _build_order_summary_message(
+    order_row: Dict[str, Any],
+    client_details: Dict[str, Any],
+) -> str:
+    due_date_value = _normalize_due_date(order_row.get("due_date"))
+    due_date_text = _format_date(due_date_value)
+    deadline_line = _format_deadline_line(due_date_value)
     created_text = _format_datetime(order_row.get("created_at"))
     is_urgent = bool(order_row.get("is_urgent"))
     creator_name = order_row.get("created_by_name")
@@ -5192,17 +5201,21 @@ def format_orders_overview(order_rows: list[Dict[str, Any]]) -> str:
     formatted_entries: list[str] = []
 
     for index, row in enumerate(order_rows, start=1):
-        due_date_text = _format_date(row.get("due_date"))
+        due_date_value = _normalize_due_date(row.get("due_date"))
+        due_date_text = _format_date(due_date_value)
         created_at_text = _format_datetime(row.get("created_at"))
         responsible = (row.get("created_by_name") or "").strip() or "—"
         urgency_text = "Да" if row.get("is_urgent") else "Нет"
+        deadline_line = _format_deadline_line(due_date_value)
+        folder_path_text = (row.get("folder_path") or "").strip() or "—"
 
         entry_lines = [
             f"{index}. №{row.get('order_number')} — {row.get('title')}",
             f"   🏢 Заказчик: {row.get('client_name')}",
             f"   🗂️ Тип: {row.get('order_type')}",
-            f"   📁 Папка: {row.get('folder_path')}",
+            f"   📁 Папка / ГАФы: {folder_path_text}",
             f"   📅 Срок: {due_date_text}",
+            f"   {deadline_line}",
             f"   ⚡ Срочный: {urgency_text}",
             f"   🕒 Создан: {created_at_text}",
             f"   👤 Ответственный: {responsible}",
