@@ -5411,6 +5411,8 @@ async def process_task_due_date(message: Message, state: FSMContext) -> None:
     summary = _build_task_summary_message(task_row)
     await message.answer(summary, reply_markup=TASKS_MENU_KB)
 
+    await _notify_task_assignee_about_new_task(message, task_row)
+
 
 @dp.message(F.text == TASKS_SETTINGS_TEXT)
 async def handle_tasks_settings(message: Message) -> None:
@@ -5887,6 +5889,63 @@ def _build_task_summary_message(task_row: Dict[str, Any]) -> str:
         ]
     )
     return "\n".join(summary_lines)
+
+
+async def _notify_task_assignee_about_new_task(
+    message: Message, task_row: Dict[str, Any]
+) -> None:
+    assignee_id = task_row.get("assignee_id")
+    if not assignee_id:
+        return
+
+    notification_text = _build_task_assignee_notification_message(task_row)
+    bot_instance = getattr(message, "bot", None)
+    if bot_instance is None:
+        logging.warning(
+            "Bot instance is missing when notifying assignee %s about task %s",
+            assignee_id,
+            task_row.get("task_number"),
+        )
+        return
+    try:
+        await bot_instance.send_message(chat_id=int(assignee_id), text=notification_text)
+    except Exception:
+        logging.exception(
+            "Failed to notify assignee %s about new task %s",
+            assignee_id,
+            task_row.get("task_number"),
+        )
+
+
+def _build_task_assignee_notification_message(task_row: Dict[str, Any]) -> str:
+    due_date_value = _normalize_due_date(task_row.get("due_date"))
+    due_date_text = _format_date(due_date_value)
+    deadline_line = _format_deadline_line(due_date_value)
+    created_text = _format_datetime(task_row.get("created_at"))
+    comment_text = (task_row.get("comment") or "").strip()
+
+    creator_name = (task_row.get("created_by_name") or "").strip()
+    if not creator_name:
+        creator_id = task_row.get("created_by_id")
+        creator_name = f"ID: {creator_id}" if creator_id else "—"
+
+    lines = [
+        f"🆕 Вам назначена новая задача №{task_row['task_number']}.",
+        "",
+        f"🗂️ Тип: {task_row['task_type']}",
+    ]
+    if comment_text:
+        lines.append(f"💬 Комментарий: {comment_text}")
+    lines.extend(
+        [
+            f"📅 Срок выполнения: {due_date_text}",
+            deadline_line,
+            "",
+            f"🕒 Создано: {created_text}",
+            f"✍️ Создал: {creator_name}",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def format_tasks_overview(tasks: list[Dict[str, Any]]) -> str:
