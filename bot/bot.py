@@ -773,11 +773,22 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
 
 TASKS_CREATE_TASK_TEXT = "Создать задачу"
 TASKS_VIEW_TASKS_TEXT = "Посмотреть задачи"
+TASKS_SETTINGS_TEXT = "⚙️ Настройки задач"
+TASKS_SETTINGS_BACK_TEXT = "⬅️ Назад к задачам"
 
 TASKS_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=TASKS_CREATE_TASK_TEXT)],
         [KeyboardButton(text=TASKS_VIEW_TASKS_TEXT)],
+        [KeyboardButton(text=TASKS_SETTINGS_TEXT)],
+        [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
+TASKS_SETTINGS_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=TASKS_SETTINGS_BACK_TEXT)],
         [KeyboardButton(text="⬅️ Главное меню")],
     ],
     resize_keyboard=True,
@@ -4896,6 +4907,22 @@ async def handle_tasks_create(message: Message) -> None:
 async def handle_tasks_view(message: Message) -> None:
     await message.answer(
         "📋 Просмотр задач пока находится в разработке.",
+        reply_markup=TASKS_MENU_KB,
+    )
+
+
+@dp.message(F.text == TASKS_SETTINGS_TEXT)
+async def handle_tasks_settings(message: Message) -> None:
+    await message.answer(
+        "⚙️ Настройки задач пока находятся в разработке.",
+        reply_markup=TASKS_SETTINGS_MENU_KB,
+    )
+
+
+@dp.message(F.text == TASKS_SETTINGS_BACK_TEXT)
+async def handle_tasks_settings_back(message: Message) -> None:
+    await message.answer(
+        "🧠 Раздел «Задачи». Выберите действие:",
         reply_markup=TASKS_MENU_KB,
     )
 
