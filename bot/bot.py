@@ -412,6 +412,28 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE SEQUENCE IF NOT EXISTS task_number_seq START 1
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id SERIAL PRIMARY KEY,
+                    task_number INTEGER NOT NULL UNIQUE DEFAULT nextval('task_number_seq'),
+                    task_type TEXT NOT NULL,
+                    comment TEXT,
+                    assignee_id BIGINT NOT NULL,
+                    assignee_name TEXT,
+                    assignee_position TEXT,
+                    due_date DATE NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
+                    created_by_id BIGINT,
+                    created_by_name TEXT
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS clients (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -740,6 +762,13 @@ class AddClientStates(StatesGroup):
 
 class SearchClientStates(StatesGroup):
     waiting_for_query = State()
+
+
+class CreateTaskStates(StatesGroup):
+    waiting_for_task_type = State()
+    waiting_for_comment = State()
+    waiting_for_assignee = State()
+    waiting_for_due_date = State()
 
 
 class CreateOrderStates(StatesGroup):
@@ -1310,6 +1339,13 @@ async def _cancel_search_client_flow(message: Message, state: FSMContext) -> Non
     )
 
 
+async def _cancel_create_task_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Создание задачи отменено.", reply_markup=TASKS_MENU_KB
+    )
+
+
 async def _cancel_create_order_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -1582,6 +1618,16 @@ async def fetch_next_order_number() -> int:
     return int(row["next_number"] or 1)
 
 
+async def fetch_next_task_number() -> int:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT COALESCE(MAX(task_number), 0) + 1 AS next_number FROM tasks"
+        )
+    return int(row["next_number"] or 1)
+
+
 async def fetch_all_orders() -> list[Dict[str, Any]]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -1651,6 +1697,87 @@ async def create_order_in_db(
     if row is None:
         raise RuntimeError("Failed to insert order")
     return dict(row)
+
+
+async def create_task_in_db(
+    task_type: str,
+    comment: Optional[str],
+    assignee_id: int,
+    assignee_name: Optional[str],
+    assignee_position: Optional[str],
+    due_date: date,
+    created_by_id: Optional[int],
+    created_by_name: Optional[str],
+) -> Dict[str, Any]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO tasks (
+                task_type,
+                comment,
+                assignee_id,
+                assignee_name,
+                assignee_position,
+                due_date,
+                created_by_id,
+                created_by_name
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING
+                id,
+                task_number,
+                task_type,
+                comment,
+                assignee_id,
+                assignee_name,
+                assignee_position,
+                due_date,
+                created_at,
+                created_by_id,
+                created_by_name
+            """,
+            task_type,
+            comment,
+            assignee_id,
+            assignee_name,
+            assignee_position,
+            due_date,
+            created_by_id,
+            created_by_name,
+        )
+    if row is None:
+        raise RuntimeError("Failed to insert task")
+    return dict(row)
+
+
+async def fetch_tasks_overview(limit: int = 15) -> list[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    limit_value = max(1, int(limit))
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                id,
+                task_number,
+                task_type,
+                comment,
+                assignee_id,
+                assignee_name,
+                assignee_position,
+                due_date,
+                created_at,
+                created_by_id,
+                created_by_name
+            FROM tasks
+            ORDER BY due_date ASC, task_number ASC
+            LIMIT $1
+            """,
+            limit_value,
+        )
+    return [dict(row) for row in rows]
 
 
 async def fetch_plastic_material_types() -> list[str]:
@@ -3779,6 +3906,19 @@ def format_task_types_list(task_types: list[str]) -> str:
     return "\n".join(f"• {name}" for name in task_types)
 
 
+def _format_task_assignee_options(options: list[Dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for index, option in enumerate(options, start=1):
+        username = (option.get("username") or "").strip()
+        display_name = username or f"ID: {option.get('tg_id')}"
+        position = (option.get("position") or "").strip()
+        if position:
+            lines.append(f"{index}. {display_name} ({position})")
+        else:
+            lines.append(f"{index}. {display_name}")
+    return "\n".join(lines)
+
+
 def _format_datetime(value: Optional[datetime]) -> str:
     if value is None:
         return "—"
@@ -4968,19 +5108,308 @@ async def handle_tasks_section(message: Message) -> None:
 
 
 @dp.message(F.text == TASKS_CREATE_TASK_TEXT)
-async def handle_tasks_create(message: Message) -> None:
-    await message.answer(
-        "🛠️ Создание задач пока находится в разработке.",
-        reply_markup=TASKS_MENU_KB,
+async def handle_tasks_create(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    try:
+        task_types = await fetch_task_types()
+    except Exception:
+        logging.exception("Failed to load task types for task creation")
+        await message.answer(
+            "⚠️ Не удалось получить список видов задач. Попробуйте позже.",
+            reply_markup=TASKS_MENU_KB,
+        )
+        return
+    if not task_types:
+        await message.answer(
+            "ℹ️ Сначала добавьте хотя бы один вид задачи в разделе «⚙️ Настройки задач».",
+            reply_markup=TASKS_MENU_KB,
+        )
+        return
+
+    try:
+        users = await fetch_all_users_from_db()
+    except Exception:
+        logging.exception("Failed to load users for task creation")
+        await message.answer(
+            "⚠️ Не удалось получить список сотрудников. Попробуйте позже.",
+            reply_markup=TASKS_MENU_KB,
+        )
+        return
+    assignee_options = [
+        {
+            "tg_id": int(user["tg_id"]),
+            "username": (user.get("username") or "").strip(),
+            "position": (user.get("position") or "").strip(),
+        }
+        for user in users
+        if user.get("tg_id") is not None
+    ]
+    if not assignee_options:
+        await message.answer(
+            "ℹ️ В базе нет сотрудников, которых можно назначить. Добавьте пользователей в разделе настроек.",
+            reply_markup=TASKS_MENU_KB,
+        )
+        return
+
+    next_number = await fetch_next_task_number()
+    await state.update_data(
+        task_type_options=task_types,
+        task_number_hint=next_number,
+        assignee_options=assignee_options,
     )
+    await state.set_state(CreateTaskStates.waiting_for_task_type)
+
+    options_lines = "\n".join(
+        f"{index}. {name}" for index, name in enumerate(task_types, start=1)
+    )
+    prompt_lines = [
+        f"🆕 Создание задачи №{next_number}.",
+        "",
+        "Выберите вид задачи. Отправьте номер из списка или укажите точное название.",
+    ]
+    if options_lines:
+        prompt_lines.extend(["", options_lines])
+    await message.answer("\n".join(prompt_lines), reply_markup=CANCEL_KB)
 
 
 @dp.message(F.text == TASKS_VIEW_TASKS_TEXT)
 async def handle_tasks_view(message: Message) -> None:
+    try:
+        tasks = await fetch_tasks_overview()
+    except Exception:
+        logging.exception("Failed to fetch tasks overview")
+        await message.answer(
+            "⚠️ Не удалось получить список задач. Попробуйте позже.",
+            reply_markup=TASKS_MENU_KB,
+        )
+        return
+
+    overview_text = format_tasks_overview(tasks)
+    await message.answer(overview_text, reply_markup=TASKS_MENU_KB)
+
+
+@dp.message(CreateTaskStates.waiting_for_task_type)
+async def process_task_type_selection(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_task_flow(message, state)
+        return
+
+    data = await state.get_data()
+    options: list[str] = data.get("task_type_options") or []
+    if not options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Список видов задач пуст. Добавьте виды задач и начните заново.",
+            reply_markup=TASKS_MENU_KB,
+        )
+        return
+
+    selected_type: Optional[str] = None
+    if text.isdigit():
+        index = int(text)
+        if 1 <= index <= len(options):
+            selected_type = options[index - 1]
+    else:
+        lowered = text.lower()
+        for option in options:
+            if option.lower() == lowered:
+                selected_type = option
+                break
+
+    if not selected_type:
+        options_lines = "\n".join(
+            f"{index}. {name}" for index, name in enumerate(options, start=1)
+        )
+        await message.answer(
+            (
+                "⚠️ Не удалось распознать вид задачи.\n"
+                "Выберите номер из списка или укажите точное название.\n\n"
+                f"Доступные варианты:\n{options_lines}"
+            ),
+            reply_markup=CANCEL_KB,
+        )
+        return
+
+    await state.update_data(selected_task_type=selected_type)
+    await state.set_state(CreateTaskStates.waiting_for_comment)
     await message.answer(
-        "📋 Просмотр задач пока находится в разработке.",
-        reply_markup=TASKS_MENU_KB,
+        "Добавьте комментарий к задаче или нажмите «Пропустить».",
+        reply_markup=SKIP_OR_CANCEL_KB,
     )
+
+
+@dp.message(CreateTaskStates.waiting_for_comment)
+async def process_task_comment(message: Message, state: FSMContext) -> None:
+    text_raw = message.text or ""
+    text = text_raw.strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_task_flow(message, state)
+        return
+
+    comment_value: Optional[str]
+    if text == SKIP_TEXT or not text:
+        comment_value = None
+    else:
+        comment_value = text_raw.strip()
+
+    data = await state.get_data()
+    assignee_options: list[Dict[str, Any]] = data.get("assignee_options") or []
+    if not assignee_options:
+        try:
+            users = await fetch_all_users_from_db()
+        except Exception:
+            logging.exception("Failed to load users for task assignment")
+            await state.clear()
+            await message.answer(
+                "⚠️ Не удалось получить список сотрудников. Попробуйте позже.",
+                reply_markup=TASKS_MENU_KB,
+            )
+            return
+        assignee_options = [
+            {
+                "tg_id": int(user["tg_id"]),
+                "username": (user.get("username") or "").strip(),
+                "position": (user.get("position") or "").strip(),
+            }
+            for user in users
+            if user.get("tg_id") is not None
+        ]
+        if not assignee_options:
+            await state.clear()
+            await message.answer(
+                "ℹ️ В базе нет сотрудников, которых можно назначить. Добавьте пользователей и начните заново.",
+                reply_markup=TASKS_MENU_KB,
+            )
+            return
+        await state.update_data(assignee_options=assignee_options)
+
+    await state.update_data(task_comment=comment_value)
+    await state.set_state(CreateTaskStates.waiting_for_assignee)
+
+    options_text = _format_task_assignee_options(assignee_options)
+    prompt_lines = ["👥 Выберите ответственного за задачу."]
+    if options_text:
+        prompt_lines.extend(["", options_text])
+    prompt_lines.extend(
+        [
+            "",
+            "Отправьте номер из списка или укажите Telegram ID/имя пользователя.",
+        ]
+    )
+    await message.answer("\n".join(prompt_lines), reply_markup=CANCEL_KB)
+
+
+@dp.message(CreateTaskStates.waiting_for_assignee)
+async def process_task_assignee(message: Message, state: FSMContext) -> None:
+    text_raw = message.text or ""
+    text = text_raw.strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_task_flow(message, state)
+        return
+
+    data = await state.get_data()
+    options: list[Dict[str, Any]] = data.get("assignee_options") or []
+    if not options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Не удалось получить список сотрудников. Попробуйте создать задачу заново.",
+            reply_markup=TASKS_MENU_KB,
+        )
+        return
+
+    selected_option: Optional[Dict[str, Any]] = None
+    if text.isdigit():
+        index = int(text)
+        if 1 <= index <= len(options):
+            selected_option = options[index - 1]
+    else:
+        normalized = text.lstrip("@")
+        lowered = normalized.lower()
+        for option in options:
+            tg_id_value = str(option.get("tg_id") or "")
+            username_value = (option.get("username") or "").strip().lower()
+            if normalized == tg_id_value:
+                selected_option = option
+                break
+            if username_value and lowered == username_value:
+                selected_option = option
+                break
+
+    if not selected_option:
+        options_text = _format_task_assignee_options(options)
+        await message.answer(
+            (
+                "⚠️ Не удалось определить сотрудника.\n"
+                "Выберите номер из списка или укажите точное имя/ID.\n\n"
+                f"Доступные варианты:\n{options_text}"
+            ),
+            reply_markup=CANCEL_KB,
+        )
+        return
+
+    await state.update_data(selected_assignee=selected_option)
+    await state.set_state(CreateTaskStates.waiting_for_due_date)
+    await message.answer(
+        "Укажите срок выполнения (формат ДД.ММ.ГГГГ).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(CreateTaskStates.waiting_for_due_date)
+async def process_task_due_date(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_create_task_flow(message, state)
+        return
+
+    due_date = _parse_due_date_input(text)
+    if not due_date:
+        await message.answer(
+            "⚠️ Не удалось распознать дату. Укажите дату в формате ДД.ММ.ГГГГ.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+
+    data = await state.get_data()
+    task_type = data.get("selected_task_type")
+    assignee = data.get("selected_assignee")
+    comment = data.get("task_comment")
+
+    if not task_type or not assignee or assignee.get("tg_id") is None:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Данные задачи неполные. Попробуйте создать задачу заново.",
+            reply_markup=TASKS_MENU_KB,
+        )
+        return
+
+    creator_id = message.from_user.id if message.from_user else None
+    creator_name = message.from_user.full_name if message.from_user else None
+
+    try:
+        task_row = await create_task_in_db(
+            task_type=task_type,
+            comment=comment,
+            assignee_id=int(assignee["tg_id"]),
+            assignee_name=(assignee.get("username") or "").strip() or None,
+            assignee_position=(assignee.get("position") or "").strip() or None,
+            due_date=due_date,
+            created_by_id=creator_id,
+            created_by_name=creator_name,
+        )
+    except Exception:
+        logging.exception("Failed to create task")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить задачу. Попробуйте позже.",
+            reply_markup=TASKS_MENU_KB,
+        )
+        return
+
+    await state.clear()
+    summary = _build_task_summary_message(task_row)
+    await message.answer(summary, reply_markup=TASKS_MENU_KB)
 
 
 @dp.message(F.text == TASKS_SETTINGS_TEXT)
@@ -5420,6 +5849,82 @@ def _build_order_summary_message(
         f"✍️ Создал: {creator_name}",
     ]
     return "\n".join(summary_lines)
+
+
+def _build_task_summary_message(task_row: Dict[str, Any]) -> str:
+    due_date_value = _normalize_due_date(task_row.get("due_date"))
+    due_date_text = _format_date(due_date_value)
+    deadline_line = _format_deadline_line(due_date_value)
+    created_text = _format_datetime(task_row.get("created_at"))
+    comment_text = (task_row.get("comment") or "").strip()
+    assignee_name = (task_row.get("assignee_name") or "").strip()
+    if not assignee_name:
+        assignee_id = task_row.get("assignee_id")
+        assignee_name = f"ID: {assignee_id}" if assignee_id else "—"
+    position = (task_row.get("assignee_position") or "").strip()
+    assignee_line = f"👤 Ответственный: {assignee_name}"
+    if position:
+        assignee_line += f" ({position})"
+    creator_name = (task_row.get("created_by_name") or "").strip()
+    if not creator_name:
+        creator_id = task_row.get("created_by_id")
+        creator_name = f"ID: {creator_id}" if creator_id else "—"
+    summary_lines = [
+        f"✅ Задача №{task_row['task_number']} создана.",
+        "",
+        f"🗂️ Тип: {task_row['task_type']}",
+    ]
+    if comment_text:
+        summary_lines.append(f"💬 Комментарий: {comment_text}")
+    summary_lines.extend(
+        [
+            assignee_line,
+            f"📅 Срок выполнения: {due_date_text}",
+            deadline_line,
+            "",
+            f"🕒 Создано: {created_text}",
+            f"✍️ Создал: {creator_name}",
+        ]
+    )
+    return "\n".join(summary_lines)
+
+
+def format_tasks_overview(tasks: list[Dict[str, Any]]) -> str:
+    if not tasks:
+        return "📋 Пока нет задач. Создайте первую задачу через кнопку «Создать задачу»."
+
+    lines: list[str] = ["📋 Задачи:", ""]
+    for task in tasks:
+        due_date_value = _normalize_due_date(task.get("due_date"))
+        due_date_text = _format_date(due_date_value)
+        deadline_line = _format_deadline_line(due_date_value)
+        comment_text = (task.get("comment") or "").strip()
+        assignee_name = (task.get("assignee_name") or "").strip()
+        if not assignee_name:
+            assignee_id = task.get("assignee_id")
+            assignee_name = f"ID: {assignee_id}" if assignee_id else "—"
+        position = (task.get("assignee_position") or "").strip()
+        assignee_line = f"   👤 Ответственный: {assignee_name}"
+        if position:
+            assignee_line += f" ({position})"
+        creator_name = (task.get("created_by_name") or "").strip()
+        if not creator_name:
+            creator_id = task.get("created_by_id")
+            creator_name = f"ID: {creator_id}" if creator_id else "—"
+        lines.append(f"№{task['task_number']} — {task['task_type']}")
+        if comment_text:
+            lines.append(f"   💬 {comment_text}")
+        lines.extend(
+            [
+                assignee_line,
+                f"   📅 Срок: {due_date_text}",
+                f"   {deadline_line}",
+                f"   🕒 Создано: {_format_datetime(task.get('created_at'))}",
+                f"   ✍️ Автор: {creator_name}",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
 
 
 def format_orders_overview(order_rows: list[Dict[str, Any]]) -> str:
