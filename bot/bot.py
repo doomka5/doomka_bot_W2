@@ -403,6 +403,15 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS task_types (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS clients (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -548,6 +557,11 @@ class AddUserStates(StatesGroup):
 
 class ManageOrderTypeStates(StatesGroup):
     waiting_for_new_type_name = State()
+
+
+class ManageTaskTypeStates(StatesGroup):
+    waiting_for_new_type_name = State()
+    waiting_for_type_to_delete = State()
 
 
 class ManagePlasticMaterialStates(StatesGroup):
@@ -1548,6 +1562,16 @@ async def fetch_order_types() -> list[str]:
     return [row["name"] for row in rows]
 
 
+async def fetch_task_types() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM task_types ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
 async def fetch_next_order_number() -> int:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -2289,6 +2313,33 @@ async def insert_order_type(name: str) -> bool:
             name,
         )
     return row is not None
+
+
+async def insert_task_type(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO task_types (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_task_type(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM task_types WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
 
 
 async def insert_plastic_material_type(name: str) -> bool:
@@ -3722,6 +3773,12 @@ def format_order_types_list(order_types: list[str]) -> str:
     return "\n".join(f"• {name}" for name in order_types)
 
 
+def format_task_types_list(task_types: list[str]) -> str:
+    if not task_types:
+        return "—"
+    return "\n".join(f"• {name}" for name in task_types)
+
+
 def _format_datetime(value: Optional[datetime]) -> str:
     if value is None:
         return "—"
@@ -4942,12 +4999,34 @@ async def handle_tasks_settings_back(message: Message) -> None:
     )
 
 
+async def send_task_type_settings_overview(message: Message) -> None:
+    task_types = await fetch_task_types()
+    lines = ["🗂️ Настройки задач → Виды задач.", ""]
+    if task_types:
+        lines.extend(
+            [
+                "Сейчас доступны виды задач:",
+                format_task_types_list(task_types),
+                "",
+                "Используйте кнопки ниже, чтобы управлять списком.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "Виды задач ещё не добавлены.",
+                "Используйте кнопку «➕ Добавить вид задачи», чтобы создать первый вариант.",
+            ]
+        )
+    await message.answer("\n".join(lines), reply_markup=TASK_TYPES_MENU_KB)
+
+
 @dp.message(F.text == TASKS_SETTINGS_TASK_TYPES_TEXT)
-async def handle_task_types_folder(message: Message) -> None:
-    await message.answer(
-        "🗂️ Раздел «Виды задач». Выберите действие:",
-        reply_markup=TASK_TYPES_MENU_KB,
-    )
+async def handle_task_types_folder(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_task_type_settings_overview(message)
 
 
 @dp.message(F.text == TASK_TYPES_BACK_TEXT)
@@ -4959,19 +5038,57 @@ async def handle_task_types_back(message: Message) -> None:
 
 
 @dp.message(F.text == TASK_TYPES_ADD_TEXT)
-async def handle_task_type_add(message: Message) -> None:
-    await message.answer(
-        "➕ Добавление видов задач пока находится в разработке.",
-        reply_markup=TASK_TYPES_MENU_KB,
-    )
+async def handle_task_type_add(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageTaskTypeStates.waiting_for_new_type_name)
+    task_types = await fetch_task_types()
+    prompt_lines = ["Введите название нового вида задачи."]
+    if task_types:
+        prompt_lines.extend(
+            [
+                "",
+                "Уже добавлены:",
+                format_task_types_list(task_types),
+            ]
+        )
+    else:
+        prompt_lines.extend(
+            [
+                "",
+                "Пока ещё не добавлено ни одного вида задачи.",
+            ]
+        )
+    await message.answer("\n".join(prompt_lines), reply_markup=CANCEL_KB)
 
 
 @dp.message(F.text == TASK_TYPES_DELETE_TEXT)
-async def handle_task_type_delete(message: Message) -> None:
-    await message.answer(
-        "➖ Удаление видов задач пока находится в разработке.",
-        reply_markup=TASK_TYPES_MENU_KB,
+async def handle_task_type_delete(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    task_types = await fetch_task_types()
+    if not task_types:
+        await message.answer(
+            "Список видов задач пуст. Добавьте варианты перед удалением.",
+            reply_markup=TASK_TYPES_MENU_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageTaskTypeStates.waiting_for_type_to_delete)
+    await state.update_data(task_type_options=task_types)
+    options_lines = [
+        f"{index}. {name}" for index, name in enumerate(task_types, start=1)
+    ]
+    prompt = "\n".join(
+        [
+            "Выберите вид задачи для удаления:",
+            "",
+            "\n".join(options_lines),
+            "",
+            "Отправьте номер или название из списка. Для отмены нажмите «❌ Отмена».",
+        ]
     )
+    await message.answer(prompt, reply_markup=CANCEL_KB)
 
 
 @dp.message(F.text == "Клиенты")
@@ -5724,6 +5841,61 @@ async def process_new_order_type(message: Message, state: FSMContext) -> None:
         await message.answer(f"ℹ️ Тип заказа «{name}» уже есть в списке.")
     await state.clear()
     await send_order_type_settings_overview(message)
+
+
+@dp.message(ManageTaskTypeStates.waiting_for_new_type_name)
+async def process_new_task_type(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("⚠️ Название не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_task_type(name):
+        await message.answer(f"✅ Вид задачи «{name}» добавлен.")
+    else:
+        await message.answer(f"ℹ️ Вид задачи «{name}» уже есть в списке.")
+    await state.clear()
+    await send_task_type_settings_overview(message)
+
+
+@dp.message(ManageTaskTypeStates.waiting_for_type_to_delete)
+async def process_task_type_deletion(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(
+            "⚠️ Не удалось распознать ответ. Укажите номер или название вида задачи.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    data = await state.get_data()
+    options: list[str] = data.get("task_type_options") or []
+    selected_name: Optional[str] = None
+    if text.isdigit():
+        index = int(text)
+        if 1 <= index <= len(options):
+            selected_name = options[index - 1]
+    if selected_name is None:
+        for option in options:
+            if option.lower() == text.lower():
+                selected_name = option
+                break
+    if selected_name is None:
+        await message.answer(
+            "⚠️ Не удалось определить вид задачи. Отправьте номер или название из списка.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if await delete_task_type(selected_name):
+        await message.answer(f"🗑 Вид задачи «{selected_name}» удалён.")
+    else:
+        await message.answer(
+            f"ℹ️ Вид задачи «{selected_name}» не найден в базе. Возможно, он уже удалён.",
+        )
+    await state.clear()
+    await send_task_type_settings_overview(message)
 
 
 @dp.message(F.text == ORDER_TYPE_BACK_TEXT)
@@ -10636,6 +10808,12 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     ):
         await state.clear()
         await send_order_type_settings_overview(message)
+        return
+    if current_state and current_state.startswith(
+        ManageTaskTypeStates.__name__
+    ):
+        await state.clear()
+        await send_task_type_settings_overview(message)
         return
     if current_state and current_state.startswith(
         ManageFilmSeriesStates.__name__
