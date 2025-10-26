@@ -771,6 +771,18 @@ MAIN_MENU_KB = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+TASKS_CREATE_TASK_TEXT = "Создать задачу"
+TASKS_VIEW_TASKS_TEXT = "Посмотреть задачи"
+
+TASKS_MENU_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=TASKS_CREATE_TASK_TEXT)],
+        [KeyboardButton(text=TASKS_VIEW_TASKS_TEXT)],
+        [KeyboardButton(text="⬅️ Главное меню")],
+    ],
+    resize_keyboard=True,
+)
+
 ORDERS_NEW_ORDER_TEXT = "🆕 Новый заказ"
 ORDERS_IN_PROGRESS_TEXT = "📋 Заказы в работе"
 ORDERS_SETTINGS_TEXT = "⚙️ Настройки заказов"
@@ -4867,7 +4879,25 @@ async def handle_back_to_main(message: Message) -> None:
 
 @dp.message(F.text == "Задачи")
 async def handle_tasks_section(message: Message) -> None:
-    await message.answer("Раздел «Задачи».", reply_markup=MAIN_MENU_KB)
+    await message.answer(
+        "🧠 Раздел «Задачи». Выберите действие:", reply_markup=TASKS_MENU_KB
+    )
+
+
+@dp.message(F.text == TASKS_CREATE_TASK_TEXT)
+async def handle_tasks_create(message: Message) -> None:
+    await message.answer(
+        "🛠️ Создание задач пока находится в разработке.",
+        reply_markup=TASKS_MENU_KB,
+    )
+
+
+@dp.message(F.text == TASKS_VIEW_TASKS_TEXT)
+async def handle_tasks_view(message: Message) -> None:
+    await message.answer(
+        "📋 Просмотр задач пока находится в разработке.",
+        reply_markup=TASKS_MENU_KB,
+    )
 
 
 @dp.message(F.text == "Клиенты")
