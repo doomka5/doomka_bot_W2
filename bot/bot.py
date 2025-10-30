@@ -707,6 +707,11 @@ class ManagePowerSupplyVoltageStates(StatesGroup):
     waiting_for_voltage_value_to_delete = State()
 
 
+class ManagePowerSupplyIpStates(StatesGroup):
+    waiting_for_new_ip_value = State()
+    waiting_for_ip_value_to_delete = State()
+
+
 class AddWarehouseFilmStates(StatesGroup):
     waiting_for_article = State()
     waiting_for_manufacturer = State()
@@ -1048,12 +1053,15 @@ LED_STRIPS_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производите
 POWER_SUPPLIES_MANUFACTURERS_MENU_TEXT = "🏭 Производитель блока питания"
 POWER_SUPPLIES_SERIES_MENU_TEXT = "🎬 Серия блока питания"
 POWER_SUPPLIES_VOLTAGE_MENU_TEXT = "🔌 Напряжение блоков питания"
+POWER_SUPPLIES_IP_MENU_TEXT = "🛡️ Степень защиты блоков питания"
 POWER_SUPPLIES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя блоков питания"
 POWER_SUPPLIES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя блоков питания"
 POWER_SUPPLIES_ADD_SERIES_TEXT = "➕ Добавить серию блока питания"
 POWER_SUPPLIES_REMOVE_SERIES_TEXT = "➖ Удалить серию блока питания"
 POWER_SUPPLIES_ADD_VOLTAGE_TEXT = "➕ Добавить напряжение блока питания"
 POWER_SUPPLIES_REMOVE_VOLTAGE_TEXT = "➖ Удалить напряжение блока питания"
+POWER_SUPPLIES_ADD_IP_TEXT = "➕ Добавить IP блока питания"
+POWER_SUPPLIES_REMOVE_IP_TEXT = "➖ Удалить IP блока питания"
 POWER_SUPPLIES_BACK_TEXT = "⬅️ Назад к блокам питания"
 
 WAREHOUSE_SETTINGS_LED_MODULES_KB = ReplyKeyboardMarkup(
@@ -1159,6 +1167,7 @@ WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text=POWER_SUPPLIES_MANUFACTURERS_MENU_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_SERIES_MENU_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_VOLTAGE_MENU_TEXT)],
+        [KeyboardButton(text=POWER_SUPPLIES_IP_MENU_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
@@ -1186,6 +1195,15 @@ WAREHOUSE_SETTINGS_POWER_SUPPLIES_VOLTAGE_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=POWER_SUPPLIES_ADD_VOLTAGE_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_REMOVE_VOLTAGE_TEXT)],
+        [KeyboardButton(text=POWER_SUPPLIES_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_POWER_SUPPLIES_IP_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=POWER_SUPPLIES_ADD_IP_TEXT)],
+        [KeyboardButton(text=POWER_SUPPLIES_REMOVE_IP_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_BACK_TEXT)],
     ],
     resize_keyboard=True,
@@ -1924,6 +1942,16 @@ async def fetch_power_supply_voltage_options() -> list[str]:
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT name FROM power_supply_voltage_options ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
+async def fetch_power_supply_ip_options() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM power_supply_ip_options ORDER BY LOWER(name)"
         )
     return [row["name"] for row in rows]
 
@@ -3017,6 +3045,33 @@ async def delete_power_supply_voltage_option(name: str) -> bool:
     async with db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM power_supply_voltage_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_power_supply_ip_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO power_supply_ip_options (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_power_supply_ip_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM power_supply_ip_options WHERE LOWER(name) = LOWER($1)",
             name,
         )
     return result.endswith(" 1")
@@ -4665,6 +4720,14 @@ def build_voltage_values_keyboard(values: list[str]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_ip_values_keyboard(values: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for value in values:
+        rows.append([KeyboardButton(text=value)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 def build_lens_counts_keyboard(counts: list[int]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for value in counts:
@@ -5124,10 +5187,24 @@ async def send_power_supply_voltage_menu(message: Message) -> None:
     )
 
 
+async def send_power_supply_ip_menu(message: Message) -> None:
+    ip_options = await fetch_power_supply_ip_options()
+    formatted = format_materials_list(ip_options)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Блоки питания → IP.\n\n"
+        "Доступные значения степени защиты (IP):\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить значение.",
+        reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_IP_KB,
+    )
+
+
 async def send_power_supplies_settings_overview(message: Message) -> None:
     manufacturers = await fetch_power_supply_manufacturers_with_series()
     voltage_options = await fetch_power_supply_voltage_options()
+    ip_options = await fetch_power_supply_ip_options()
     formatted_voltage = format_materials_list(voltage_options)
+    formatted_ip = format_materials_list(ip_options)
     if manufacturers:
         lines: list[str] = []
         for manufacturer in manufacturers:
@@ -5154,11 +5231,13 @@ async def send_power_supplies_settings_overview(message: Message) -> None:
         f"{intro}\n"
         f"{formatted}\n\n"
         "Используйте кнопки «🏭 Производитель блока питания», "
-        "«🎬 Серия блока питания» и «🔌 Напряжение блоков питания»,"
-        " чтобы управлять списками."
+        "«🎬 Серия блока питания», «🔌 Напряжение блоков питания» "
+        "и «🛡️ Степень защиты блоков питания», чтобы управлять списками."
         "\n\n"
         "Доступные значения напряжения:\n"
-        f"{formatted_voltage}",
+        f"{formatted_voltage}\n\n"
+        "Доступные значения степени защиты (IP):\n"
+        f"{formatted_ip}",
         reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
     )
 
@@ -10287,6 +10366,14 @@ async def handle_power_supply_voltage_menu(message: Message, state: FSMContext) 
     await send_power_supply_voltage_menu(message)
 
 
+@dp.message(F.text == POWER_SUPPLIES_IP_MENU_TEXT)
+async def handle_power_supply_ip_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_power_supply_ip_menu(message)
+
+
 @dp.message(F.text == POWER_SUPPLIES_BACK_TEXT)
 async def handle_back_to_power_supply_settings(
     message: Message, state: FSMContext
@@ -11416,6 +11503,88 @@ async def process_remove_power_supply_voltage_option(
         )
 
 
+@dp.message(F.text == POWER_SUPPLIES_ADD_IP_TEXT)
+async def handle_add_power_supply_ip_option(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManagePowerSupplyIpStates.waiting_for_new_ip_value)
+    existing = await fetch_power_supply_ip_options()
+    existing_text = format_materials_list(existing)
+    await message.answer(
+        "Введите значение степени защиты IP блока питания.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManagePowerSupplyIpStates.waiting_for_new_ip_value)
+async def process_new_power_supply_ip_option(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer(
+            "⚠️ Значение не может быть пустым. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if await insert_power_supply_ip_option(value):
+        await message.answer(f"✅ IP «{value}» добавлен.")
+    else:
+        await message.answer(f"ℹ️ IP «{value}» уже есть в списке.")
+    await state.clear()
+    await send_power_supply_ip_menu(message)
+
+
+@dp.message(F.text == POWER_SUPPLIES_REMOVE_IP_TEXT)
+async def handle_remove_power_supply_ip_option(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    ip_options = await fetch_power_supply_ip_options()
+    if not ip_options:
+        await message.answer(
+            "Список степеней защиты пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_IP_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManagePowerSupplyIpStates.waiting_for_ip_value_to_delete)
+    await message.answer(
+        "Выберите IP, который нужно удалить:",
+        reply_markup=build_ip_values_keyboard(ip_options),
+    )
+
+
+@dp.message(ManagePowerSupplyIpStates.waiting_for_ip_value_to_delete)
+async def process_remove_power_supply_ip_option(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer(
+            "⚠️ Значение не может быть пустым. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if await delete_power_supply_ip_option(value):
+        await message.answer(f"🗑 IP «{value}» удалён.")
+        await state.clear()
+        await send_power_supply_ip_menu(message)
+    else:
+        await message.answer(
+            f"ℹ️ IP «{value}» не найден в списке.",
+            reply_markup=CANCEL_KB,
+        )
+
+
 @dp.message(F.text == WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)
 async def handle_back_to_electrics_settings(
     message: Message, state: FSMContext
@@ -12099,6 +12268,12 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     ):
         await state.clear()
         await send_power_supply_voltage_menu(message)
+        return
+    if current_state and current_state.startswith(
+        ManagePowerSupplyIpStates.__name__
+    ):
+        await state.clear()
+        await send_power_supply_ip_menu(message)
         return
     await state.clear()
     await send_plastic_settings_overview(message)
