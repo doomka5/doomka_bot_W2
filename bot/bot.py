@@ -8375,8 +8375,27 @@ async def handle_stock_warehouse_power_supplies(
     message: Message, state: FSMContext
 ) -> None:
     await state.clear()
+    stock = await fetch_power_supply_stock_summary()
+    if not stock:
+        await message.answer(
+            "ℹ️ На складе пока нет блоков питания. Добавьте позиции через кнопку "
+            f"«{WAREHOUSE_POWER_SUPPLIES_ADD_TEXT}».",
+            reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        )
+        return
+    lines: list[str] = []
+    for item in stock:
+        ip_value = item["ip"]
+        ip_display = ip_value if str(ip_value).upper().startswith("IP") else f"IP {ip_value}"
+        details = (
+            f"{item['manufacturer']} / {item['series']}, {item['power']} / {item['voltage']}, "
+            f"{ip_display}"
+        )
+        lines.append(
+            f"• {item['article']} — {item['total_quantity']} шт. ({details})"
+        )
     await message.answer(
-        "ℹ️ Отчет по остаткам блоков питания находится в разработке.",
+        "📦 Остаток блоков питания на складе:\n\n" + "\n".join(lines),
         reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
     )
 
