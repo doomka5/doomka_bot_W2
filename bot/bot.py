@@ -392,12 +392,35 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS power_supply_ip_options (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS power_supply_series (
                     id SERIAL PRIMARY KEY,
                     manufacturer_id INTEGER NOT NULL REFERENCES power_supply_manufacturers(id) ON DELETE CASCADE,
                     name TEXT NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT timezone('utc', now()),
                     UNIQUE(manufacturer_id, name)
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS generated_power_supplies (
+                    id SERIAL PRIMARY KEY,
+                    article TEXT UNIQUE NOT NULL,
+                    manufacturer_id INTEGER NOT NULL REFERENCES power_supply_manufacturers(id) ON DELETE RESTRICT,
+                    series_id INTEGER NOT NULL REFERENCES power_supply_series(id) ON DELETE RESTRICT,
+                    power_option_id INTEGER NOT NULL REFERENCES power_supply_power_options(id) ON DELETE RESTRICT,
+                    voltage_option_id INTEGER NOT NULL REFERENCES power_supply_voltage_options(id) ON DELETE RESTRICT,
+                    ip_option_id INTEGER NOT NULL REFERENCES power_supply_ip_options(id) ON DELETE RESTRICT,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
                 )
                 """
             )
@@ -692,6 +715,15 @@ class GenerateLedModuleStates(StatesGroup):
     waiting_for_lens_count = State()
     waiting_for_power = State()
     waiting_for_voltage = State()
+
+
+class GeneratePowerSupplyStates(StatesGroup):
+    waiting_for_article = State()
+    waiting_for_manufacturer = State()
+    waiting_for_series = State()
+    waiting_for_power = State()
+    waiting_for_voltage = State()
+    waiting_for_ip = State()
 
 
 class ManageLedStripManufacturerStates(StatesGroup):
@@ -1066,6 +1098,7 @@ LED_STRIPS_ADD_MANUFACTURER_TEXT = "➕ Добавить производите�
 LED_STRIPS_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led ленты"
 POWER_SUPPLIES_MANUFACTURERS_MENU_TEXT = "🏭 Производитель блока питания"
 POWER_SUPPLIES_SERIES_MENU_TEXT = "🎬 Серия блока питания"
+POWER_SUPPLIES_BASE_MENU_TEXT = "Блоки питания baza"
 POWER_SUPPLIES_POWER_MENU_TEXT = "⚡️ Мощность блоков питания"
 POWER_SUPPLIES_VOLTAGE_MENU_TEXT = "🔌 Напряжение блоков питания"
 POWER_SUPPLIES_IP_MENU_TEXT = "🛡️ Степень защиты блоков питания"
@@ -1073,6 +1106,8 @@ POWER_SUPPLIES_ADD_MANUFACTURER_TEXT = "➕ Добавить производи�
 POWER_SUPPLIES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя блоков питания"
 POWER_SUPPLIES_ADD_SERIES_TEXT = "➕ Добавить серию блока питания"
 POWER_SUPPLIES_REMOVE_SERIES_TEXT = "➖ Удалить серию блока питания"
+POWER_SUPPLIES_GENERATE_TEXT = "Сгенерировать блок питания"
+POWER_SUPPLIES_DELETE_TEXT = "Удалить блок питания"
 POWER_SUPPLIES_ADD_POWER_TEXT = "➕ Добавить мощность блока питания"
 POWER_SUPPLIES_REMOVE_POWER_TEXT = "➖ Удалить мощность блока питания"
 POWER_SUPPLIES_ADD_VOLTAGE_TEXT = "➕ Добавить напряжение блока питания"
@@ -1183,10 +1218,20 @@ WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=POWER_SUPPLIES_MANUFACTURERS_MENU_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_SERIES_MENU_TEXT)],
+        [KeyboardButton(text=POWER_SUPPLIES_BASE_MENU_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_POWER_MENU_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_VOLTAGE_MENU_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_IP_MENU_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=POWER_SUPPLIES_GENERATE_TEXT)],
+        [KeyboardButton(text=POWER_SUPPLIES_DELETE_TEXT)],
+        [KeyboardButton(text=POWER_SUPPLIES_BACK_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -2062,6 +2107,65 @@ async def fetch_power_supply_series_by_manufacturer(
     return [row["name"] for row in rows]
 
 
+async def get_power_supply_series_by_name(
+    manufacturer_id: int, name: str
+) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, manufacturer_id, name
+            FROM power_supply_series
+            WHERE manufacturer_id = $1 AND LOWER(name) = LOWER($2)
+            """,
+            manufacturer_id,
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "manufacturer_id": row["manufacturer_id"], "name": row["name"]}
+
+
+async def get_power_supply_power_option_by_name(name: str) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name FROM power_supply_power_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "name": row["name"]}
+
+
+async def get_power_supply_voltage_option_by_name(name: str) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name FROM power_supply_voltage_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "name": row["name"]}
+
+
+async def get_power_supply_ip_option_by_name(name: str) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, name FROM power_supply_ip_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    if row is None:
+        return None
+    return {"id": row["id"], "name": row["name"]}
+
+
 async def get_led_module_manufacturer_by_name(
     name: str,
 ) -> Optional[dict[str, Any]]:
@@ -2162,6 +2266,31 @@ async def fetch_generated_led_modules_with_details() -> list[dict[str, Any]]:
             JOIN led_module_power_options AS power ON power.id = glm.power_option_id
             JOIN led_module_voltage_options AS voltage ON voltage.id = glm.voltage_option_id
             ORDER BY glm.created_at DESC NULLS LAST, glm.id DESC
+            """
+        )
+    return [dict(row) for row in rows]
+
+
+async def fetch_generated_power_supplies_with_details() -> list[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                gps.article,
+                manufacturer.name AS manufacturer,
+                series.name AS series,
+                power.name AS power,
+                voltage.name AS voltage,
+                ip.name AS ip
+            FROM generated_power_supplies AS gps
+            JOIN power_supply_manufacturers AS manufacturer ON manufacturer.id = gps.manufacturer_id
+            JOIN power_supply_series AS series ON series.id = gps.series_id
+            JOIN power_supply_power_options AS power ON power.id = gps.power_option_id
+            JOIN power_supply_voltage_options AS voltage ON voltage.id = gps.voltage_option_id
+            JOIN power_supply_ip_options AS ip ON ip.id = gps.ip_option_id
+            ORDER BY gps.created_at DESC NULLS LAST, gps.id DESC
             """
         )
     return [dict(row) for row in rows]
@@ -2340,6 +2469,24 @@ async def get_led_module_lens_count_by_value(value: int) -> Optional[dict[str, A
     return {"id": row["id"], "value": row["value"]}
 
 
+async def get_generated_power_supply_by_article(article: str) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, article, manufacturer_id, series_id, power_option_id,
+                   voltage_option_id, ip_option_id, created_at
+            FROM generated_power_supplies
+            WHERE LOWER(article) = LOWER($1)
+            """,
+            article,
+        )
+    if row is None:
+        return None
+    return dict(row)
+
+
 async def get_generated_led_module_by_article(article: str) -> Optional[dict[str, Any]]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -2352,6 +2499,45 @@ async def get_generated_led_module_by_article(article: str) -> Optional[dict[str
             WHERE LOWER(article) = LOWER($1)
             """,
             article,
+        )
+    if row is None:
+        return None
+    return dict(row)
+
+
+async def insert_generated_power_supply(
+    *,
+    article: str,
+    manufacturer_id: int,
+    series_id: int,
+    power_option_id: int,
+    voltage_option_id: int,
+    ip_option_id: int,
+) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO generated_power_supplies (
+                article,
+                manufacturer_id,
+                series_id,
+                power_option_id,
+                voltage_option_id,
+                ip_option_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (article) DO NOTHING
+            RETURNING id, article, manufacturer_id, series_id, power_option_id,
+                      voltage_option_id, ip_option_id, created_at
+            """,
+            article,
+            manufacturer_id,
+            series_id,
+            power_option_id,
+            voltage_option_id,
+            ip_option_id,
         )
     if row is None:
         return None
@@ -5239,6 +5425,38 @@ async def send_power_supply_series_menu(message: Message) -> None:
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_SERIES_KB)
 
 
+async def send_power_supply_base_menu(message: Message) -> None:
+    supplies = await fetch_generated_power_supplies_with_details()
+    if supplies:
+        lines: list[str] = []
+        for supply in supplies:
+            lines.append(
+                " | ".join(
+                    [
+                        f"Артикул: {supply.get('article', '—')}",
+                        f"Производитель: {supply.get('manufacturer', '—')}",
+                        f"Серия: {supply.get('series', '—')}",
+                        f"Мощность: {supply.get('power', '—')}",
+                        f"Напряжение: {supply.get('voltage', '—')}",
+                        f"IP: {supply.get('ip', '—')}",
+                    ]
+                )
+            )
+        formatted = "\n".join(lines)
+        text = (
+            "⚙️ Настройки склада → Электрика → Блоки питания → Блоки питания baza.\n\n"
+            "Сгенерированные блоки питания:\n"
+            f"{formatted}"
+        )
+    else:
+        text = (
+            "⚙️ Настройки склада → Электрика → Блоки питания → Блоки питания baza.\n\n"
+            "База блоков питания пуста. Используйте кнопку «Сгенерировать блок питания», "
+            "чтобы добавить запись."
+        )
+    await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB)
+
+
 async def send_power_supply_power_menu(message: Message) -> None:
     power_options = await fetch_power_supply_power_options()
     formatted = format_materials_list(power_options)
@@ -5312,6 +5530,8 @@ async def send_power_supplies_settings_overview(message: Message) -> None:
         "«🎬 Серия блока питания», «⚡️ Мощность блоков питания», "
         "«🔌 Напряжение блоков питания» и "
         "«🛡️ Степень защиты блоков питания», чтобы управлять списками."
+        "\n"
+        "Кнопка «Блоки питания baza» позволит сформировать новые позиции базы."
         "\n\n"
         "Доступные значения мощности:\n"
         f"{formatted_power}\n\n"
@@ -10398,6 +10618,360 @@ async def handle_delete_led_module(message: Message, state: FSMContext) -> None:
     await message.answer(
         "🗑️ Удаление Led модуля находится в разработке.",
         reply_markup=WAREHOUSE_SETTINGS_LED_MODULES_BASE_KB,
+    )
+
+
+@dp.message(F.text == POWER_SUPPLIES_BASE_MENU_TEXT)
+async def handle_power_supply_base_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_power_supply_base_menu(message)
+
+
+@dp.message(F.text == POWER_SUPPLIES_GENERATE_TEXT)
+async def handle_generate_power_supply(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    manufacturers_with_series = [
+        item
+        for item in await fetch_power_supply_manufacturers_with_series()
+        if item.get("series")
+    ]
+    power_options = await fetch_power_supply_power_options()
+    voltage_options = await fetch_power_supply_voltage_options()
+    ip_options = await fetch_power_supply_ip_options()
+    missing: list[str] = []
+    if not manufacturers_with_series:
+        missing.append("• производители и серии")
+    if not power_options:
+        missing.append("• значения мощности")
+    if not voltage_options:
+        missing.append("• значения напряжения")
+    if not ip_options:
+        missing.append("• значения IP")
+    if missing:
+        details = "\n".join(missing)
+        await message.answer(
+            "⚠️ Невозможно начать генерацию блока питания.\n\n"
+            "Заполните следующие справочники в настройках:\n"
+            f"{details}",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    await state.set_state(GeneratePowerSupplyStates.waiting_for_article)
+    await message.answer(
+        "Введите артикул для нового блока питания.",
+        reply_markup=build_article_input_keyboard(),
+    )
+
+
+@dp.message(GeneratePowerSupplyStates.waiting_for_article)
+async def process_generate_power_supply_article(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    article = (message.text or "").strip()
+    if not article:
+        await message.answer(
+            "⚠️ Артикул не может быть пустым. Попробуйте снова.",
+            reply_markup=build_article_input_keyboard(),
+        )
+        return
+    existing = await get_generated_power_supply_by_article(article)
+    if existing:
+        await message.answer(
+            f"⚠️ Артикул «{article}» уже существует. Укажите другой.",
+            reply_markup=build_article_input_keyboard(),
+        )
+        return
+    manufacturers_with_series = [
+        item
+        for item in await fetch_power_supply_manufacturers_with_series()
+        if item.get("series")
+    ]
+    if not manufacturers_with_series:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Список производителей с сериями пуст. Добавьте данные в настройках блоков питания.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    manufacturer_names = [item["name"] for item in manufacturers_with_series]
+    await state.update_data(generated_power_supply_article=article)
+    await state.set_state(GeneratePowerSupplyStates.waiting_for_manufacturer)
+    await message.answer(
+        "Выберите производителя блока питания.\n\n"
+        "Доступные варианты:\n"
+        f"{format_materials_list(manufacturer_names)}",
+        reply_markup=build_manufacturers_keyboard(manufacturer_names),
+    )
+
+
+@dp.message(GeneratePowerSupplyStates.waiting_for_manufacturer)
+async def process_generate_power_supply_manufacturer(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    manufacturers_with_series = [
+        item
+        for item in await fetch_power_supply_manufacturers_with_series()
+        if item.get("series")
+    ]
+    if not manufacturers_with_series:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Список производителей с сериями пуст. Добавьте данные в настройках блоков питания.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    manufacturer_names = [item["name"] for item in manufacturers_with_series]
+    raw = (message.text or "").strip()
+    match = next(
+        (item for item in manufacturers_with_series if item["name"].lower() == raw.lower()),
+        None,
+    )
+    if match is None:
+        await message.answer(
+            "⚠️ Производитель не найден. Выберите вариант из списка.",
+            reply_markup=build_manufacturers_keyboard(manufacturer_names),
+        )
+        return
+    series_names = await fetch_power_supply_series_by_manufacturer(match["name"])
+    if not series_names:
+        await message.answer(
+            "⚠️ Для выбранного производителя отсутствуют серии. Добавьте их и попробуйте снова.",
+            reply_markup=build_manufacturers_keyboard(manufacturer_names),
+        )
+        return
+    await state.update_data(
+        generated_power_supply_manufacturer={"id": match["id"], "name": match["name"]}
+    )
+    await state.set_state(GeneratePowerSupplyStates.waiting_for_series)
+    await message.answer(
+        "Выберите серию блока питания.",
+        reply_markup=build_series_keyboard(series_names),
+    )
+
+
+@dp.message(GeneratePowerSupplyStates.waiting_for_series)
+async def process_generate_power_supply_series(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    data = await state.get_data()
+    manufacturer: Optional[dict[str, Any]] = data.get("generated_power_supply_manufacturer")
+    if not manufacturer:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось определить производителя. Начните генерацию заново.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB,
+        )
+        return
+    series_names = await fetch_power_supply_series_by_manufacturer(manufacturer["name"])
+    if not series_names:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Для выбранного производителя нет серий. Добавьте их и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    raw = (message.text or "").strip()
+    series_name = next((item for item in series_names if item.lower() == raw.lower()), None)
+    if series_name is None:
+        await message.answer(
+            "⚠️ Серия не найдена. Выберите значение из списка.",
+            reply_markup=build_series_keyboard(series_names),
+        )
+        return
+    series = await get_power_supply_series_by_name(manufacturer["id"], series_name)
+    if series is None:
+        await message.answer(
+            "⚠️ Не удалось подтвердить выбранную серию. Попробуйте снова.",
+            reply_markup=build_series_keyboard(series_names),
+        )
+        return
+    await state.update_data(generated_power_supply_series=series)
+    power_options = await fetch_power_supply_power_options()
+    if not power_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник мощностей пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    await state.set_state(GeneratePowerSupplyStates.waiting_for_power)
+    await message.answer(
+        "Выберите мощность блока питания.",
+        reply_markup=build_power_values_keyboard(power_options),
+    )
+
+
+@dp.message(GeneratePowerSupplyStates.waiting_for_power)
+async def process_generate_power_supply_power(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    power_options = await fetch_power_supply_power_options()
+    if not power_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник мощностей пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    raw = (message.text or "").strip()
+    power_name = next((item for item in power_options if item.lower() == raw.lower()), None)
+    if power_name is None:
+        await message.answer(
+            "⚠️ Мощность не найдена. Выберите значение из списка.",
+            reply_markup=build_power_values_keyboard(power_options),
+        )
+        return
+    power = await get_power_supply_power_option_by_name(power_name)
+    if power is None:
+        await message.answer(
+            "⚠️ Не удалось подтвердить выбранную мощность. Попробуйте снова.",
+            reply_markup=build_power_values_keyboard(power_options),
+        )
+        return
+    await state.update_data(generated_power_supply_power=power)
+    voltage_options = await fetch_power_supply_voltage_options()
+    if not voltage_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник напряжений пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    await state.set_state(GeneratePowerSupplyStates.waiting_for_voltage)
+    await message.answer(
+        "Выберите напряжение блока питания.",
+        reply_markup=build_voltage_values_keyboard(voltage_options),
+    )
+
+
+@dp.message(GeneratePowerSupplyStates.waiting_for_voltage)
+async def process_generate_power_supply_voltage(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    voltage_options = await fetch_power_supply_voltage_options()
+    if not voltage_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник напряжений пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    raw = (message.text or "").strip()
+    voltage_name = next((item for item in voltage_options if item.lower() == raw.lower()), None)
+    if voltage_name is None:
+        await message.answer(
+            "⚠️ Напряжение не найдено. Выберите значение из списка.",
+            reply_markup=build_voltage_values_keyboard(voltage_options),
+        )
+        return
+    voltage = await get_power_supply_voltage_option_by_name(voltage_name)
+    if voltage is None:
+        await message.answer(
+            "⚠️ Не удалось подтвердить выбранное напряжение. Попробуйте снова.",
+            reply_markup=build_voltage_values_keyboard(voltage_options),
+        )
+        return
+    await state.update_data(generated_power_supply_voltage=voltage)
+    ip_options = await fetch_power_supply_ip_options()
+    if not ip_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник IP пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    await state.set_state(GeneratePowerSupplyStates.waiting_for_ip)
+    await message.answer(
+        "Выберите степень защиты (IP) блока питания.",
+        reply_markup=build_ip_values_keyboard(ip_options),
+    )
+
+
+@dp.message(GeneratePowerSupplyStates.waiting_for_ip)
+async def process_generate_power_supply_ip(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    ip_options = await fetch_power_supply_ip_options()
+    if not ip_options:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Справочник IP пуст. Добавьте значения и начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB,
+        )
+        return
+    raw = (message.text or "").strip()
+    ip_name = next((item for item in ip_options if item.lower() == raw.lower()), None)
+    if ip_name is None:
+        await message.answer(
+            "⚠️ Значение IP не найдено. Выберите значение из списка.",
+            reply_markup=build_ip_values_keyboard(ip_options),
+        )
+        return
+    ip_option = await get_power_supply_ip_option_by_name(ip_name)
+    if ip_option is None:
+        await message.answer(
+            "⚠️ Не удалось подтвердить выбранное значение IP. Попробуйте снова.",
+            reply_markup=build_ip_values_keyboard(ip_options),
+        )
+        return
+    data = await state.get_data()
+    article = data.get("generated_power_supply_article")
+    manufacturer = data.get("generated_power_supply_manufacturer")
+    series = data.get("generated_power_supply_series")
+    power = data.get("generated_power_supply_power")
+    voltage = data.get("generated_power_supply_voltage")
+    if not all([article, manufacturer, series, power, voltage]):
+        await state.clear()
+        await message.answer(
+            "⚠️ Недостаточно данных для сохранения блока питания. Начните заново.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB,
+        )
+        return
+    record = await insert_generated_power_supply(
+        article=article,
+        manufacturer_id=manufacturer["id"],
+        series_id=series["id"],
+        power_option_id=power["id"],
+        voltage_option_id=voltage["id"],
+        ip_option_id=ip_option["id"],
+    )
+    if record is None:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить блок питания. Попробуйте позже.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB,
+        )
+        return
+    await state.clear()
+    created_at = record.get("created_at")
+    created_text = _format_datetime(created_at)
+    await message.answer(
+        "✅ Блок питания добавлен в базу.\n\n"
+        f"Артикул: {article}\n"
+        f"Производитель: {manufacturer['name']}\n"
+        f"Серия: {series['name']}\n"
+        f"Мощность: {power['name']}\n"
+        f"Напряжение: {voltage['name']}\n"
+        f"IP: {ip_option['name']}\n"
+        f"Создано: {created_text}",
+        reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB,
+    )
+
+
+@dp.message(F.text == POWER_SUPPLIES_DELETE_TEXT)
+async def handle_delete_power_supply(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await message.answer(
+        "🗑️ Удаление блока питания находится в разработке.",
+        reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB,
     )
 
 
