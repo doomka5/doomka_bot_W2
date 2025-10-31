@@ -1009,6 +1009,10 @@ WAREHOUSE_LED_MODULES_ADD_TEXT = "➕ Добавить Led модули"
 WAREHOUSE_LED_MODULES_STOCK_TEXT = "📦 Остаток Led модулей на складе"
 WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT = "➖ Списать Led модули"
 WAREHOUSE_LED_MODULES_BACK_TO_ELECTRICS_TEXT = "⬅️ Назад к разделу «Электрика»"
+WAREHOUSE_POWER_SUPPLIES_ADD_TEXT = "➕ Добавить Блок питания"
+WAREHOUSE_POWER_SUPPLIES_WRITE_OFF_TEXT = "➖ Списать Блок питания"
+WAREHOUSE_POWER_SUPPLIES_STOCK_TEXT = "📦 Остаток Блоков питания на складе"
+WAREHOUSE_POWER_SUPPLIES_BACK_TO_ELECTRICS_TEXT = "⬅️ Назад к разделу «Электрика»"
 
 WAREHOUSE_MENU_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -1413,6 +1417,16 @@ WAREHOUSE_LED_MODULES_KB = ReplyKeyboardMarkup(
         [KeyboardButton(text=WAREHOUSE_LED_MODULES_STOCK_TEXT)],
         [KeyboardButton(text=WAREHOUSE_LED_MODULES_WRITE_OFF_TEXT)],
         [KeyboardButton(text=WAREHOUSE_LED_MODULES_BACK_TO_ELECTRICS_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_POWER_SUPPLIES_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=WAREHOUSE_POWER_SUPPLIES_ADD_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_POWER_SUPPLIES_WRITE_OFF_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_POWER_SUPPLIES_STOCK_TEXT)],
+        [KeyboardButton(text=WAREHOUSE_POWER_SUPPLIES_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
 )
@@ -7670,7 +7684,51 @@ async def handle_warehouse_electrics_power_supplies(
 ) -> None:
     await state.clear()
     await message.answer(
-        "🔌 Раздел «Блоки питания». Функционал находится в разработке.",
+        "🔌 Раздел «Блоки питания». Выберите действие:",
+        reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_POWER_SUPPLIES_ADD_TEXT)
+async def handle_add_warehouse_power_supply(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "ℹ️ Добавление блоков питания находится в разработке.",
+        reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_POWER_SUPPLIES_WRITE_OFF_TEXT)
+async def handle_write_off_warehouse_power_supply(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "ℹ️ Списание блоков питания находится в разработке.",
+        reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_POWER_SUPPLIES_STOCK_TEXT)
+async def handle_stock_warehouse_power_supplies(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "ℹ️ Отчет по остаткам блоков питания находится в разработке.",
+        reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+    )
+
+
+@dp.message(F.text == WAREHOUSE_POWER_SUPPLIES_BACK_TO_ELECTRICS_TEXT)
+async def handle_back_to_electrics_from_power_supplies(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "⚡ Раздел «Электрика». Выберите категорию:",
         reply_markup=WAREHOUSE_ELECTRICS_KB,
     )
 
