@@ -374,6 +374,15 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS power_supply_power_options (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS power_supply_voltage_options (
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -710,6 +719,11 @@ class ManagePowerSupplyVoltageStates(StatesGroup):
 class ManagePowerSupplyIpStates(StatesGroup):
     waiting_for_new_ip_value = State()
     waiting_for_ip_value_to_delete = State()
+
+
+class ManagePowerSupplyPowerStates(StatesGroup):
+    waiting_for_new_power_value = State()
+    waiting_for_power_value_to_delete = State()
 
 
 class AddWarehouseFilmStates(StatesGroup):
@@ -1052,12 +1066,15 @@ LED_STRIPS_ADD_MANUFACTURER_TEXT = "➕ Добавить производите�
 LED_STRIPS_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led ленты"
 POWER_SUPPLIES_MANUFACTURERS_MENU_TEXT = "🏭 Производитель блока питания"
 POWER_SUPPLIES_SERIES_MENU_TEXT = "🎬 Серия блока питания"
+POWER_SUPPLIES_POWER_MENU_TEXT = "⚡️ Мощность блоков питания"
 POWER_SUPPLIES_VOLTAGE_MENU_TEXT = "🔌 Напряжение блоков питания"
 POWER_SUPPLIES_IP_MENU_TEXT = "🛡️ Степень защиты блоков питания"
 POWER_SUPPLIES_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя блоков питания"
 POWER_SUPPLIES_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя блоков питания"
 POWER_SUPPLIES_ADD_SERIES_TEXT = "➕ Добавить серию блока питания"
 POWER_SUPPLIES_REMOVE_SERIES_TEXT = "➖ Удалить серию блока питания"
+POWER_SUPPLIES_ADD_POWER_TEXT = "➕ Добавить мощность блока питания"
+POWER_SUPPLIES_REMOVE_POWER_TEXT = "➖ Удалить мощность блока питания"
 POWER_SUPPLIES_ADD_VOLTAGE_TEXT = "➕ Добавить напряжение блока питания"
 POWER_SUPPLIES_REMOVE_VOLTAGE_TEXT = "➖ Удалить напряжение блока питания"
 POWER_SUPPLIES_ADD_IP_TEXT = "➕ Добавить IP блока питания"
@@ -1166,6 +1183,7 @@ WAREHOUSE_SETTINGS_POWER_SUPPLIES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=POWER_SUPPLIES_MANUFACTURERS_MENU_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_SERIES_MENU_TEXT)],
+        [KeyboardButton(text=POWER_SUPPLIES_POWER_MENU_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_VOLTAGE_MENU_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_IP_MENU_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
@@ -1186,6 +1204,15 @@ WAREHOUSE_SETTINGS_POWER_SUPPLIES_SERIES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=POWER_SUPPLIES_ADD_SERIES_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_REMOVE_SERIES_TEXT)],
+        [KeyboardButton(text=POWER_SUPPLIES_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_POWER_SUPPLIES_POWER_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=POWER_SUPPLIES_ADD_POWER_TEXT)],
+        [KeyboardButton(text=POWER_SUPPLIES_REMOVE_POWER_TEXT)],
         [KeyboardButton(text=POWER_SUPPLIES_BACK_TEXT)],
     ],
     resize_keyboard=True,
@@ -1932,6 +1959,16 @@ async def fetch_power_supply_manufacturers() -> list[str]:
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT name FROM power_supply_manufacturers ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
+async def fetch_power_supply_power_options() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM power_supply_power_options ORDER BY LOWER(name)"
         )
     return [row["name"] for row in rows]
 
@@ -3018,6 +3055,33 @@ async def delete_power_supply_manufacturer(name: str) -> bool:
     async with db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM power_supply_manufacturers WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_power_supply_power_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO power_supply_power_options (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_power_supply_power_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM power_supply_power_options WHERE LOWER(name) = LOWER($1)",
             name,
         )
     return result.endswith(" 1")
@@ -5175,6 +5239,18 @@ async def send_power_supply_series_menu(message: Message) -> None:
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_SERIES_KB)
 
 
+async def send_power_supply_power_menu(message: Message) -> None:
+    power_options = await fetch_power_supply_power_options()
+    formatted = format_materials_list(power_options)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Блоки питания → Мощность.\n\n"
+        "Доступные значения мощности:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить мощность.",
+        reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_POWER_KB,
+    )
+
+
 async def send_power_supply_voltage_menu(message: Message) -> None:
     voltage_options = await fetch_power_supply_voltage_options()
     formatted = format_materials_list(voltage_options)
@@ -5201,8 +5277,10 @@ async def send_power_supply_ip_menu(message: Message) -> None:
 
 async def send_power_supplies_settings_overview(message: Message) -> None:
     manufacturers = await fetch_power_supply_manufacturers_with_series()
+    power_options = await fetch_power_supply_power_options()
     voltage_options = await fetch_power_supply_voltage_options()
     ip_options = await fetch_power_supply_ip_options()
+    formatted_power = format_materials_list(power_options)
     formatted_voltage = format_materials_list(voltage_options)
     formatted_ip = format_materials_list(ip_options)
     if manufacturers:
@@ -5231,9 +5309,12 @@ async def send_power_supplies_settings_overview(message: Message) -> None:
         f"{intro}\n"
         f"{formatted}\n\n"
         "Используйте кнопки «🏭 Производитель блока питания», "
-        "«🎬 Серия блока питания», «🔌 Напряжение блоков питания» "
-        "и «🛡️ Степень защиты блоков питания», чтобы управлять списками."
+        "«🎬 Серия блока питания», «⚡️ Мощность блоков питания», "
+        "«🔌 Напряжение блоков питания» и "
+        "«🛡️ Степень защиты блоков питания», чтобы управлять списками."
         "\n\n"
+        "Доступные значения мощности:\n"
+        f"{formatted_power}\n\n"
         "Доступные значения напряжения:\n"
         f"{formatted_voltage}\n\n"
         "Доступные значения степени защиты (IP):\n"
@@ -10358,6 +10439,14 @@ async def handle_power_supply_series_menu(message: Message, state: FSMContext) -
     await send_power_supply_series_menu(message)
 
 
+@dp.message(F.text == POWER_SUPPLIES_POWER_MENU_TEXT)
+async def handle_power_supply_power_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_power_supply_power_menu(message)
+
+
 @dp.message(F.text == POWER_SUPPLIES_VOLTAGE_MENU_TEXT)
 async def handle_power_supply_voltage_menu(message: Message, state: FSMContext) -> None:
     if not await ensure_admin_access(message, state):
@@ -11417,6 +11506,92 @@ async def process_remove_power_supply_series(
     await send_power_supplies_settings_overview(message)
 
 
+@dp.message(F.text == POWER_SUPPLIES_ADD_POWER_TEXT)
+async def handle_add_power_supply_power_option(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(
+        ManagePowerSupplyPowerStates.waiting_for_new_power_value
+    )
+    existing = await fetch_power_supply_power_options()
+    existing_text = format_materials_list(existing)
+    await message.answer(
+        "Введите значение мощности блока питания.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManagePowerSupplyPowerStates.waiting_for_new_power_value)
+async def process_new_power_supply_power_option(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer(
+            "⚠️ Значение не может быть пустым. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if await insert_power_supply_power_option(value):
+        await message.answer(f"✅ Мощность «{value}» добавлена.")
+    else:
+        await message.answer(f"ℹ️ Мощность «{value}» уже есть в списке.")
+    await state.clear()
+    await send_power_supply_power_menu(message)
+
+
+@dp.message(F.text == POWER_SUPPLIES_REMOVE_POWER_TEXT)
+async def handle_remove_power_supply_power_option(
+    message: Message, state: FSMContext
+) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    power_options = await fetch_power_supply_power_options()
+    if not power_options:
+        await message.answer(
+            "Список мощностей пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_POWER_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(
+        ManagePowerSupplyPowerStates.waiting_for_power_value_to_delete
+    )
+    await message.answer(
+        "Выберите мощность, которую нужно удалить:",
+        reply_markup=build_power_values_keyboard(power_options),
+    )
+
+
+@dp.message(ManagePowerSupplyPowerStates.waiting_for_power_value_to_delete)
+async def process_remove_power_supply_power_option(
+    message: Message, state: FSMContext
+) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer(
+            "⚠️ Значение не может быть пустым. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if await delete_power_supply_power_option(value):
+        await message.answer(f"🗑 Мощность «{value}» удалена.")
+        await state.clear()
+        await send_power_supply_power_menu(message)
+    else:
+        await message.answer(
+            f"ℹ️ Мощность «{value}» не найдена в списке.",
+            reply_markup=CANCEL_KB,
+        )
+
+
 @dp.message(F.text == POWER_SUPPLIES_ADD_VOLTAGE_TEXT)
 async def handle_add_power_supply_voltage_option(
     message: Message, state: FSMContext
@@ -12262,6 +12437,12 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     ):
         await state.clear()
         await send_power_supplies_settings_overview(message)
+        return
+    if current_state and current_state.startswith(
+        ManagePowerSupplyPowerStates.__name__
+    ):
+        await state.clear()
+        await send_power_supply_power_menu(message)
         return
     if current_state and current_state.startswith(
         ManagePowerSupplyVoltageStates.__name__
