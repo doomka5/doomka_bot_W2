@@ -426,6 +426,33 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS warehouse_power_supplies (
+                    id SERIAL PRIMARY KEY,
+                    power_supply_id INTEGER NOT NULL REFERENCES generated_power_supplies(id) ON DELETE RESTRICT,
+                    article TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    added_by_id BIGINT,
+                    added_by_name TEXT,
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS written_off_power_supplies (
+                    id SERIAL PRIMARY KEY,
+                    power_supply_id INTEGER NOT NULL REFERENCES generated_power_supplies(id) ON DELETE RESTRICT,
+                    article TEXT NOT NULL,
+                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                    order_reference TEXT,
+                    written_off_by_id BIGINT,
+                    written_off_by_name TEXT,
+                    written_off_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS film_series (
                     id SERIAL PRIMARY KEY,
                     manufacturer_id INTEGER NOT NULL REFERENCES film_manufacturers(id) ON DELETE CASCADE,
@@ -823,6 +850,17 @@ class WriteOffWarehouseLedModuleStates(StatesGroup):
     waiting_for_module = State()
     waiting_for_quantity = State()
     waiting_for_project = State()
+
+
+class AddWarehousePowerSupplyStates(StatesGroup):
+    waiting_for_power_supply = State()
+    waiting_for_quantity = State()
+
+
+class WriteOffWarehousePowerSupplyStates(StatesGroup):
+    waiting_for_power_supply = State()
+    waiting_for_quantity = State()
+    waiting_for_order = State()
 
 
 class SearchWarehousePlasticStates(StatesGroup):
@@ -1550,6 +1588,24 @@ async def _cancel_write_off_led_module_flow(message: Message, state: FSMContext)
     await state.clear()
     await message.answer(
         "❌ Списание Led модулей отменено.", reply_markup=WAREHOUSE_LED_MODULES_KB
+    )
+
+
+async def _cancel_add_power_supply_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Добавление блока питания отменено.",
+        reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+    )
+
+
+async def _cancel_write_off_power_supply_flow(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "❌ Списание блоков питания отменено.",
+        reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
     )
 
 
@@ -2310,6 +2366,42 @@ async def fetch_generated_power_supplies_with_details() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+async def fetch_power_supply_stock_summary() -> list[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                gps.article,
+                manufacturer.name AS manufacturer,
+                series.name AS series,
+                power.name AS power,
+                voltage.name AS voltage,
+                ip.name AS ip,
+                COALESCE(SUM(wps.quantity), 0) AS total_quantity
+            FROM generated_power_supplies AS gps
+            JOIN power_supply_manufacturers AS manufacturer ON manufacturer.id = gps.manufacturer_id
+            JOIN power_supply_series AS series ON series.id = gps.series_id
+            JOIN power_supply_power_options AS power ON power.id = gps.power_option_id
+            JOIN power_supply_voltage_options AS voltage ON voltage.id = gps.voltage_option_id
+            JOIN power_supply_ip_options AS ip ON ip.id = gps.ip_option_id
+            LEFT JOIN warehouse_power_supplies AS wps ON wps.power_supply_id = gps.id
+            GROUP BY
+                gps.id,
+                gps.article,
+                manufacturer.name,
+                series.name,
+                power.name,
+                voltage.name,
+                ip.name
+            HAVING COALESCE(SUM(wps.quantity), 0) > 0
+            ORDER BY total_quantity DESC, LOWER(gps.article)
+            """,
+        )
+    return [dict(row) for row in rows]
+
+
 async def fetch_led_module_stock_summary() -> list[dict[str, Any]]:
     if db_pool is None:
         raise RuntimeError("Database pool is not initialised")
@@ -2374,6 +2466,35 @@ async def get_generated_led_module_details(module_id: int) -> Optional[dict[str,
             WHERE glm.id = $1
             """,
             module_id,
+        )
+    if row is None:
+        return None
+    return dict(row)
+
+
+async def get_generated_power_supply_details(power_supply_id: int) -> Optional[dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                gps.id,
+                gps.article,
+                manufacturer.name AS manufacturer,
+                series.name AS series,
+                power.name AS power,
+                voltage.name AS voltage,
+                ip.name AS ip
+            FROM generated_power_supplies AS gps
+            JOIN power_supply_manufacturers AS manufacturer ON manufacturer.id = gps.manufacturer_id
+            JOIN power_supply_series AS series ON series.id = gps.series_id
+            JOIN power_supply_power_options AS power ON power.id = gps.power_option_id
+            JOIN power_supply_voltage_options AS voltage ON voltage.id = gps.voltage_option_id
+            JOIN power_supply_ip_options AS ip ON ip.id = gps.ip_option_id
+            WHERE gps.id = $1
+            """,
+            power_supply_id,
         )
     if row is None:
         return None
@@ -2556,6 +2677,148 @@ async def insert_generated_power_supply(
     if row is None:
         return None
     return dict(row)
+
+
+async def insert_warehouse_power_supply_record(
+    *,
+    power_supply_id: int,
+    article: str,
+    quantity: int,
+    added_by_id: Optional[int],
+    added_by_name: Optional[str],
+) -> Dict[str, Any]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    added_at = datetime.now(WARSAW_TZ)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO warehouse_power_supplies (
+                power_supply_id,
+                article,
+                quantity,
+                added_by_id,
+                added_by_name,
+                added_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING
+                id,
+                power_supply_id,
+                article,
+                quantity,
+                added_by_id,
+                added_by_name,
+                added_at
+            """,
+            power_supply_id,
+            article,
+            quantity,
+            added_by_id,
+            added_by_name,
+            added_at,
+        )
+    if row is None:
+        return {}
+    return dict(row)
+
+
+async def get_power_supply_stock_quantity(power_supply_id: int) -> int:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        value = await conn.fetchval(
+            """
+            SELECT COALESCE(SUM(quantity), 0)
+            FROM warehouse_power_supplies
+            WHERE power_supply_id = $1
+            """,
+            power_supply_id,
+        )
+    return int(value or 0)
+
+
+async def write_off_power_supply_stock(
+    *,
+    power_supply_id: int,
+    article: str,
+    quantity: int,
+    order_reference: str,
+    written_off_by_id: Optional[int],
+    written_off_by_name: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    if quantity <= 0:
+        raise ValueError("Quantity for write-off must be positive")
+    now_warsaw = datetime.now(WARSAW_TZ)
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            available = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(quantity), 0)
+                FROM warehouse_power_supplies
+                WHERE power_supply_id = $1
+                """,
+                power_supply_id,
+            )
+            if available is None or int(available) < quantity:
+                return None
+            ledger_row = await conn.fetchrow(
+                """
+                INSERT INTO warehouse_power_supplies (
+                    power_supply_id,
+                    article,
+                    quantity,
+                    added_by_id,
+                    added_by_name,
+                    added_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id
+                """,
+                power_supply_id,
+                article,
+                -quantity,
+                written_off_by_id,
+                written_off_by_name,
+                now_warsaw,
+            )
+            if ledger_row is None:
+                return None
+            written_off_row = await conn.fetchrow(
+                """
+                INSERT INTO written_off_power_supplies (
+                    power_supply_id,
+                    article,
+                    quantity,
+                    order_reference,
+                    written_off_by_id,
+                    written_off_by_name,
+                    written_off_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING
+                    id,
+                    power_supply_id,
+                    article,
+                    quantity,
+                    order_reference,
+                    written_off_by_id,
+                    written_off_by_name,
+                    written_off_at
+                """,
+                power_supply_id,
+                article,
+                quantity,
+                order_reference,
+                written_off_by_id,
+                written_off_by_name,
+                now_warsaw,
+            )
+    if written_off_row is None:
+        return None
+    return dict(written_off_row)
 
 
 async def insert_generated_led_module(
@@ -5022,6 +5285,14 @@ def build_lens_counts_keyboard(counts: list[int]) -> ReplyKeyboardMarkup:
 
 
 def build_led_module_articles_keyboard(articles: list[str]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for article in articles:
+        rows.append([KeyboardButton(text=article)])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def build_power_supply_articles_keyboard(articles: list[str]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for article in articles:
         rows.append([KeyboardButton(text=article)])
@@ -7694,9 +7965,19 @@ async def handle_add_warehouse_power_supply(
     message: Message, state: FSMContext
 ) -> None:
     await state.clear()
+    supplies = await fetch_generated_power_supplies_with_details()
+    if not supplies:
+        await message.answer(
+            "ℹ️ В базе пока нет блоков питания. Добавьте их через настройки.",
+            reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        )
+        return
+    await state.set_state(AddWarehousePowerSupplyStates.waiting_for_power_supply)
     await message.answer(
-        "ℹ️ Добавление блоков питания находится в разработке.",
-        reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        "Выберите блок питания, который нужно добавить на склад.",
+        reply_markup=build_power_supply_articles_keyboard(
+            [item["article"] for item in supplies]
+        ),
     )
 
 
@@ -7705,8 +7986,354 @@ async def handle_write_off_warehouse_power_supply(
     message: Message, state: FSMContext
 ) -> None:
     await state.clear()
+    stock = await fetch_power_supply_stock_summary()
+    available_supplies = [
+        item for item in stock if int(item.get("total_quantity") or 0) > 0
+    ]
+    if not available_supplies:
+        await message.answer(
+            "ℹ️ На складе нет блоков питания для списания.",
+            reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        )
+        return
+    overview_lines: list[str] = []
+    for item in available_supplies:
+        details = (
+            f"{item['manufacturer']} / {item['series']}, {item['power']} / {item['voltage']} / {item['ip']}"
+        )
+        overview_lines.append(
+            f"• {item['article']} — {details}. Остаток: {item['total_quantity']} шт"
+        )
+    await state.set_state(WriteOffWarehousePowerSupplyStates.waiting_for_power_supply)
     await message.answer(
-        "ℹ️ Списание блоков питания находится в разработке.",
+        "Выберите блок питания для списания со склада.\n\n" +
+        "Доступные позиции:\n" + "\n".join(overview_lines),
+        reply_markup=build_power_supply_articles_keyboard(
+            [item["article"] for item in available_supplies]
+        ),
+    )
+
+
+@dp.message(AddWarehousePowerSupplyStates.waiting_for_power_supply)
+async def process_add_power_supply_selection(
+    message: Message, state: FSMContext
+) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_power_supply_flow(message, state)
+        return
+    if not text:
+        supplies = await fetch_generated_power_supplies_with_details()
+        if not supplies:
+            await state.clear()
+            await message.answer(
+                "ℹ️ В базе пока нет блоков питания. Добавьте их через настройки.",
+                reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Укажите артикул блока питания, используя кнопки ниже.",
+            reply_markup=build_power_supply_articles_keyboard(
+                [item["article"] for item in supplies]
+            ),
+        )
+        return
+    supply = await get_generated_power_supply_by_article(text)
+    if supply is None:
+        supplies = await fetch_generated_power_supplies_with_details()
+        if not supplies:
+            await state.clear()
+            await message.answer(
+                "ℹ️ В базе пока нет блоков питания. Добавьте их через настройки.",
+                reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Блок питания с таким артикулом не найден. Выберите вариант из списка.",
+            reply_markup=build_power_supply_articles_keyboard(
+                [item["article"] for item in supplies]
+            ),
+        )
+        return
+    await state.update_data(
+        selected_power_supply_id=supply["id"],
+        selected_power_supply_article=supply["article"],
+    )
+    await state.set_state(AddWarehousePowerSupplyStates.waiting_for_quantity)
+    await message.answer(
+        f"Укажите количество для артикула {supply['article']} (положительное число).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(AddWarehousePowerSupplyStates.waiting_for_quantity)
+async def process_add_power_supply_quantity(
+    message: Message, state: FSMContext
+) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_add_power_supply_flow(message, state)
+        return
+    quantity = parse_positive_integer(text)
+    if quantity is None:
+        await message.answer(
+            "⚠️ Количество должно быть положительным числом. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    data = await state.get_data()
+    supply_id = data.get("selected_power_supply_id")
+    article = data.get("selected_power_supply_article")
+    if supply_id is None or article is None:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось определить выбранный блок питания. Начните заново.",
+            reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        )
+        return
+    added_by_id = message.from_user.id if message.from_user else None
+    added_by_name = message.from_user.full_name if message.from_user else None
+    try:
+        record = await insert_warehouse_power_supply_record(
+            power_supply_id=int(supply_id),
+            article=str(article),
+            quantity=int(quantity),
+            added_by_id=added_by_id,
+            added_by_name=added_by_name,
+        )
+    except Exception:
+        logging.exception("Failed to insert warehouse power supply record")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить запись. Попробуйте позже.",
+            reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        )
+        return
+    if not record:
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось сохранить запись. Попробуйте позже.",
+            reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        )
+        return
+    details = await get_generated_power_supply_details(int(supply_id))
+    await state.clear()
+    summary_lines: list[str] = []
+    if details:
+        summary_lines.extend(
+            [
+                f"Артикул: {details['article']}",
+                f"Производитель: {details['manufacturer']}",
+                f"Серия: {details['series']}",
+                f"Мощность: {details['power']}",
+                f"Напряжение: {details['voltage']}",
+                f"IP: {details['ip']}",
+            ]
+        )
+    else:
+        summary_lines.append(f"Артикул: {article}")
+    quantity_value = record.get("quantity", quantity)
+    summary_employee = record.get("added_by_name") or added_by_name or "—"
+    added_at_text = _format_datetime(record.get("added_at"))
+    summary_lines.append(f"Количество: {quantity_value} шт")
+    summary_lines.append(f"Добавил: {summary_employee}")
+    summary_lines.append(f"Добавлено: {added_at_text}")
+    await message.answer(
+        "✅ Блок питания добавлен на склад.\n\n" + "\n".join(summary_lines),
+        reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+    )
+
+
+@dp.message(WriteOffWarehousePowerSupplyStates.waiting_for_power_supply)
+async def process_write_off_power_supply_selection(
+    message: Message, state: FSMContext
+) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_write_off_power_supply_flow(message, state)
+        return
+    if not text:
+        stock = await fetch_power_supply_stock_summary()
+        available_supplies = [
+            item for item in stock if int(item.get("total_quantity") or 0) > 0
+        ]
+        if not available_supplies:
+            await state.clear()
+            await message.answer(
+                "ℹ️ На складе нет блоков питания для списания.",
+                reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Выберите артикул блока питания из списка ниже.",
+            reply_markup=build_power_supply_articles_keyboard(
+                [item["article"] for item in available_supplies]
+            ),
+        )
+        return
+    supply = await get_generated_power_supply_by_article(text)
+    if supply is None:
+        stock = await fetch_power_supply_stock_summary()
+        available_supplies = [
+            item for item in stock if int(item.get("total_quantity") or 0) > 0
+        ]
+        if not available_supplies:
+            await state.clear()
+            await message.answer(
+                "ℹ️ На складе нет блоков питания для списания.",
+                reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+            )
+            return
+        await message.answer(
+            "⚠️ Блок питания с таким артикулом не найден. Выберите вариант из списка.",
+            reply_markup=build_power_supply_articles_keyboard(
+                [item["article"] for item in available_supplies]
+            ),
+        )
+        return
+    available_quantity = await get_power_supply_stock_quantity(int(supply["id"]))
+    if available_quantity <= 0:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Указанный блок питания отсутствует на складе.",
+            reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        )
+        return
+    await state.update_data(
+        selected_power_supply_id=supply["id"],
+        selected_power_supply_article=supply["article"],
+        available_quantity=available_quantity,
+    )
+    await state.set_state(WriteOffWarehousePowerSupplyStates.waiting_for_quantity)
+    await message.answer(
+        f"Укажите количество для списания (доступно {available_quantity} шт).",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(WriteOffWarehousePowerSupplyStates.waiting_for_quantity)
+async def process_write_off_power_supply_quantity(
+    message: Message, state: FSMContext
+) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_write_off_power_supply_flow(message, state)
+        return
+    quantity = parse_positive_integer(text)
+    if quantity is None:
+        await message.answer(
+            "⚠️ Количество должно быть положительным числом. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    data = await state.get_data()
+    available_quantity = int(data.get("available_quantity") or 0)
+    if available_quantity <= 0:
+        await state.clear()
+        await message.answer(
+            "ℹ️ Указанный блок питания отсутствует на складе.",
+            reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        )
+        return
+    if quantity > available_quantity:
+        await message.answer(
+            f"⚠️ Для списания доступно только {available_quantity} шт. Укажите другое количество.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    await state.update_data(write_off_quantity=quantity)
+    await state.set_state(WriteOffWarehousePowerSupplyStates.waiting_for_order)
+    await message.answer(
+        "Укажите заказ, для которого списываются блоки питания.",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(WriteOffWarehousePowerSupplyStates.waiting_for_order)
+async def process_write_off_power_supply_order(
+    message: Message, state: FSMContext
+) -> None:
+    text = (message.text or "").strip()
+    if text == CANCEL_TEXT:
+        await _cancel_write_off_power_supply_flow(message, state)
+        return
+    order_reference = text
+    if not order_reference:
+        await message.answer(
+            "⚠️ Название заказа не может быть пустым. Укажите заказ.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    data = await state.get_data()
+    supply_id = data.get("selected_power_supply_id")
+    article = data.get("selected_power_supply_article")
+    quantity = data.get("write_off_quantity")
+    if supply_id is None or article is None or quantity is None:
+        await _cancel_write_off_power_supply_flow(message, state)
+        return
+    written_off_by_id = message.from_user.id if message.from_user else None
+    written_off_by_name = message.from_user.full_name if message.from_user else None
+    try:
+        result = await write_off_power_supply_stock(
+            power_supply_id=int(supply_id),
+            article=str(article),
+            quantity=int(quantity),
+            order_reference=order_reference,
+            written_off_by_id=written_off_by_id,
+            written_off_by_name=written_off_by_name,
+        )
+    except Exception:
+        logging.exception("Failed to write off power supply stock")
+        await state.clear()
+        await message.answer(
+            "⚠️ Не удалось списать блоки питания. Попробуйте позже.",
+            reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+        )
+        return
+    if result is None:
+        current_available = await get_power_supply_stock_quantity(int(supply_id))
+        if current_available <= 0:
+            await state.clear()
+            await message.answer(
+                "ℹ️ Указанный блок питания отсутствует на складе.",
+                reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
+            )
+            return
+        await state.update_data(available_quantity=current_available)
+        await state.set_state(WriteOffWarehousePowerSupplyStates.waiting_for_quantity)
+        await message.answer(
+            f"⚠️ Для списания доступно только {current_available} шт. Укажите другое количество.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    details = await get_generated_power_supply_details(int(supply_id))
+    remaining_quantity = await get_power_supply_stock_quantity(int(supply_id))
+    await state.clear()
+    summary_lines: list[str] = []
+    if details:
+        summary_lines.extend(
+            [
+                f"Артикул: {details['article']}",
+                f"Производитель: {details['manufacturer']}",
+                f"Серия: {details['series']}",
+                f"Мощность: {details['power']}",
+                f"Напряжение: {details['voltage']}",
+                f"IP: {details['ip']}",
+            ]
+        )
+    else:
+        summary_lines.append(f"Артикул: {article}")
+    summary_lines.append(f"Списано: {quantity} шт")
+    summary_lines.append(f"Остаток на складе: {remaining_quantity} шт")
+    summary_lines.append(f"Заказ: {order_reference}")
+    summary_lines.append(
+        f"Списал: {result.get('written_off_by_name') or written_off_by_name or '—'}"
+    )
+    summary_lines.append(
+        f"Дата списания: {_format_datetime(result.get('written_off_at'))}"
+    )
+    await message.answer(
+        "✅ Блоки питания списаны со склада.\n\n" + "\n".join(summary_lines),
         reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
     )
 
@@ -13059,6 +13686,11 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
         await _cancel_add_led_module_flow(message, state)
         return
     if current_state and current_state.startswith(
+        AddWarehousePowerSupplyStates.__name__
+    ):
+        await _cancel_add_power_supply_flow(message, state)
+        return
+    if current_state and current_state.startswith(
         GenerateLedModuleStates.__name__
     ):
         await _cancel_generate_led_module_flow(message, state)
@@ -13098,6 +13730,11 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     ):
         await state.clear()
         await send_power_supply_ip_menu(message)
+        return
+    if current_state and current_state.startswith(
+        WriteOffWarehousePowerSupplyStates.__name__
+    ):
+        await _cancel_write_off_power_supply_flow(message, state)
         return
     await state.clear()
     await send_plastic_settings_overview(message)
