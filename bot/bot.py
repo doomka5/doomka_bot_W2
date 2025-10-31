@@ -5300,6 +5300,19 @@ def build_power_supply_articles_keyboard(articles: list[str]) -> ReplyKeyboardMa
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_power_supply_overview_lines(
+    supplies: list[dict[str, Any]]
+) -> list[str]:
+    lines: list[str] = []
+    for supply in supplies:
+        details = (
+            f"{supply.get('manufacturer', '—')} / {supply.get('series', '—')}, "
+            f"{supply.get('power', '—')} / {supply.get('voltage', '—')} / {supply.get('ip', '—')}"
+        )
+        lines.append(f"• {supply.get('article', '—')} — {details}")
+    return lines
+
+
 def build_thickness_keyboard(thicknesses: list[Decimal]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for value in thicknesses:
@@ -7973,8 +7986,14 @@ async def handle_add_warehouse_power_supply(
         )
         return
     await state.set_state(AddWarehousePowerSupplyStates.waiting_for_power_supply)
+    overview_lines = build_power_supply_overview_lines(supplies)
+    overview_text = (
+        "\n\nДоступные позиции:\n" + "\n".join(overview_lines)
+        if overview_lines
+        else ""
+    )
     await message.answer(
-        "Выберите блок питания, который нужно добавить на склад.",
+        "Выберите блок питания, который нужно добавить на склад." + overview_text,
         reply_markup=build_power_supply_articles_keyboard(
             [item["article"] for item in supplies]
         ),
@@ -8031,8 +8050,14 @@ async def process_add_power_supply_selection(
                 reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
             )
             return
+        overview_lines = build_power_supply_overview_lines(supplies)
+        overview_text = (
+            "\n\nДоступные позиции:\n" + "\n".join(overview_lines)
+            if overview_lines
+            else ""
+        )
         await message.answer(
-            "⚠️ Укажите артикул блока питания, используя кнопки ниже.",
+            "⚠️ Укажите артикул блока питания, используя кнопки ниже." + overview_text,
             reply_markup=build_power_supply_articles_keyboard(
                 [item["article"] for item in supplies]
             ),
@@ -8048,8 +8073,15 @@ async def process_add_power_supply_selection(
                 reply_markup=WAREHOUSE_POWER_SUPPLIES_KB,
             )
             return
+        overview_lines = build_power_supply_overview_lines(supplies)
+        overview_text = (
+            "\n\nДоступные позиции:\n" + "\n".join(overview_lines)
+            if overview_lines
+            else ""
+        )
         await message.answer(
-            "⚠️ Блок питания с таким артикулом не найден. Выберите вариант из списка.",
+            "⚠️ Блок питания с таким артикулом не найден. Выберите вариант из списка."
+            + overview_text,
             reply_markup=build_power_supply_articles_keyboard(
                 [item["article"] for item in supplies]
             ),
