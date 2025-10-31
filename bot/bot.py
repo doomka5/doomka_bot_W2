@@ -4634,6 +4634,27 @@ def format_storage_locations_list(locations: list[str]) -> str:
     return "\n".join(f"• {item}" for item in locations)
 
 
+def format_power_supply_record_for_message(record: Dict[str, Any]) -> str:
+    return " | ".join(
+        [
+            f"Артикул: {record.get('article', '—')}",
+            f"Производитель: {record.get('manufacturer', '—')}",
+            f"Серия: {record.get('series', '—')}",
+            f"Мощность: {record.get('power', '—')}",
+            f"Напряжение: {record.get('voltage', '—')}",
+            f"IP: {record.get('ip', '—')}",
+        ]
+    )
+
+
+def format_power_supply_records_list_for_message(
+    records: list[Dict[str, Any]]
+) -> str:
+    if not records:
+        return "—"
+    return "\n".join(format_power_supply_record_for_message(record) for record in records)
+
+
 def build_plastics_export_file(records: list[Dict[str, Any]]) -> BufferedInputFile:
     workbook = Workbook()
     sheet = workbook.active
@@ -5428,21 +5449,7 @@ async def send_power_supply_series_menu(message: Message) -> None:
 async def send_power_supply_base_menu(message: Message) -> None:
     supplies = await fetch_generated_power_supplies_with_details()
     if supplies:
-        lines: list[str] = []
-        for supply in supplies:
-            lines.append(
-                " | ".join(
-                    [
-                        f"Артикул: {supply.get('article', '—')}",
-                        f"Производитель: {supply.get('manufacturer', '—')}",
-                        f"Серия: {supply.get('series', '—')}",
-                        f"Мощность: {supply.get('power', '—')}",
-                        f"Напряжение: {supply.get('voltage', '—')}",
-                        f"IP: {supply.get('ip', '—')}",
-                    ]
-                )
-            )
-        formatted = "\n".join(lines)
+        formatted = format_power_supply_records_list_for_message(supplies)
         text = (
             "⚙️ Настройки склада → Электрика → Блоки питания → Блоки питания baza.\n\n"
             "Сгенерированные блоки питания:\n"
@@ -10951,6 +10958,8 @@ async def process_generate_power_supply_ip(message: Message, state: FSMContext) 
     await state.clear()
     created_at = record.get("created_at")
     created_text = _format_datetime(created_at)
+    supplies_overview = await fetch_generated_power_supplies_with_details()
+    formatted_supplies = format_power_supply_records_list_for_message(supplies_overview)
     await message.answer(
         "✅ Блок питания добавлен в базу.\n\n"
         f"Артикул: {article}\n"
@@ -10959,7 +10968,9 @@ async def process_generate_power_supply_ip(message: Message, state: FSMContext) 
         f"Мощность: {power['name']}\n"
         f"Напряжение: {voltage['name']}\n"
         f"IP: {ip_option['name']}\n"
-        f"Создано: {created_text}",
+        f"Создано: {created_text}\n\n"
+        "Сгенерированные блоки питания:\n"
+        f"{formatted_supplies}",
         reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB,
     )
 
