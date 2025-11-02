@@ -376,6 +376,69 @@ async def init_database() -> None:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS led_strip_color_options (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS led_strip_cut_options (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS led_strip_type_options (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS led_strip_bus_options (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS led_strip_led_count_options (
+                    id SERIAL PRIMARY KEY,
+                    value INTEGER UNIQUE NOT NULL CHECK (value > 0),
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS led_strip_voltage_options (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS led_strip_ip_options (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT timezone('utc', now())
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS power_supply_manufacturers (
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -776,6 +839,41 @@ class ManageLedStripSeriesStates(StatesGroup):
     waiting_for_series_name_to_delete = State()
 
 
+class ManageLedStripColorStates(StatesGroup):
+    waiting_for_new_color_value = State()
+    waiting_for_color_value_to_delete = State()
+
+
+class ManageLedStripCutStates(StatesGroup):
+    waiting_for_new_cut_value = State()
+    waiting_for_cut_value_to_delete = State()
+
+
+class ManageLedStripTypeStates(StatesGroup):
+    waiting_for_new_type_value = State()
+    waiting_for_type_value_to_delete = State()
+
+
+class ManageLedStripBusStates(StatesGroup):
+    waiting_for_new_bus_value = State()
+    waiting_for_bus_value_to_delete = State()
+
+
+class ManageLedStripLedCountStates(StatesGroup):
+    waiting_for_new_led_count = State()
+    waiting_for_led_count_to_delete = State()
+
+
+class ManageLedStripVoltageStates(StatesGroup):
+    waiting_for_new_voltage_value = State()
+    waiting_for_voltage_value_to_delete = State()
+
+
+class ManageLedStripIpStates(StatesGroup):
+    waiting_for_new_ip_value = State()
+    waiting_for_ip_value_to_delete = State()
+
+
 class ManagePowerSupplyManufacturerStates(StatesGroup):
     waiting_for_new_manufacturer_name = State()
     waiting_for_manufacturer_name_to_delete = State()
@@ -1156,11 +1254,32 @@ LED_MODULES_ADD_COLOR_TEXT = "➕ Добавить цвет модулей"
 LED_MODULES_REMOVE_COLOR_TEXT = "➖ Удалить цвет модулей"
 LED_STRIPS_MANUFACTURERS_MENU_TEXT = "🏭 Производитель Led ленты"
 LED_STRIPS_SERIES_MENU_TEXT = "🎬 Серия Led ленты"
+LED_STRIPS_COLORS_MENU_TEXT = "🌈 Цвет Led ленты"
+LED_STRIPS_CUT_MENU_TEXT = "✂️ Кратность реза Led ленты"
+LED_STRIPS_TYPE_MENU_TEXT = "🧾 Тип Led ленты"
+LED_STRIPS_BUS_MENU_TEXT = "🧵 Шина Led ленты"
+LED_STRIPS_LED_COUNT_MENU_TEXT = "🔢 Кол-во диодов в Led ленте"
+LED_STRIPS_VOLTAGE_MENU_TEXT = "🔌 Напряжение Led ленты"
+LED_STRIPS_IP_MENU_TEXT = "🛡️ IP Led ленты"
 LED_STRIPS_BACK_TEXT = "⬅️ Назад к Led ленте"
 LED_STRIPS_ADD_MANUFACTURER_TEXT = "➕ Добавить производителя Led ленты"
 LED_STRIPS_REMOVE_MANUFACTURER_TEXT = "➖ Удалить производителя Led ленты"
 LED_STRIPS_ADD_SERIES_TEXT = "➕ Добавить серию Led ленты"
 LED_STRIPS_REMOVE_SERIES_TEXT = "➖ Удалить серию Led ленты"
+LED_STRIPS_ADD_COLOR_TEXT = "➕ Добавить цвет Led ленты"
+LED_STRIPS_REMOVE_COLOR_TEXT = "➖ Удалить цвет Led ленты"
+LED_STRIPS_ADD_CUT_TEXT = "➕ Добавить кратность реза Led ленты"
+LED_STRIPS_REMOVE_CUT_TEXT = "➖ Удалить кратность реза Led ленты"
+LED_STRIPS_ADD_TYPE_TEXT = "➕ Добавить тип Led ленты"
+LED_STRIPS_REMOVE_TYPE_TEXT = "➖ Удалить тип Led ленты"
+LED_STRIPS_ADD_BUS_TEXT = "➕ Добавить шину Led ленты"
+LED_STRIPS_REMOVE_BUS_TEXT = "➖ Удалить шину Led ленты"
+LED_STRIPS_ADD_LED_COUNT_TEXT = "➕ Добавить кол-во диодов в Led ленте"
+LED_STRIPS_REMOVE_LED_COUNT_TEXT = "➖ Удалить кол-во диодов в Led ленте"
+LED_STRIPS_ADD_VOLTAGE_TEXT = "➕ Добавить напряжение Led ленты"
+LED_STRIPS_REMOVE_VOLTAGE_TEXT = "➖ Удалить напряжение Led ленты"
+LED_STRIPS_ADD_IP_TEXT = "➕ Добавить IP Led ленты"
+LED_STRIPS_REMOVE_IP_TEXT = "➖ Удалить IP Led ленты"
 POWER_SUPPLIES_MANUFACTURERS_MENU_TEXT = "🏭 Производитель блока питания"
 POWER_SUPPLIES_SERIES_MENU_TEXT = "🎬 Серия блока питания"
 POWER_SUPPLIES_BASE_MENU_TEXT = "Блоки питания baza"
@@ -1185,6 +1304,13 @@ WAREHOUSE_SETTINGS_LED_STRIPS_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_STRIPS_MANUFACTURERS_MENU_TEXT)],
         [KeyboardButton(text=LED_STRIPS_SERIES_MENU_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_COLORS_MENU_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_CUT_MENU_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_TYPE_MENU_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_BUS_MENU_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_LED_COUNT_MENU_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_VOLTAGE_MENU_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_IP_MENU_TEXT)],
         [KeyboardButton(text=WAREHOUSE_SETTINGS_BACK_TO_ELECTRICS_TEXT)],
     ],
     resize_keyboard=True,
@@ -1292,6 +1418,69 @@ WAREHOUSE_SETTINGS_LED_STRIPS_SERIES_KB = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=LED_STRIPS_ADD_SERIES_TEXT)],
         [KeyboardButton(text=LED_STRIPS_REMOVE_SERIES_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_LED_STRIPS_COLORS_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_STRIPS_ADD_COLOR_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_REMOVE_COLOR_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_LED_STRIPS_CUT_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_STRIPS_ADD_CUT_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_REMOVE_CUT_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_LED_STRIPS_TYPE_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_STRIPS_ADD_TYPE_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_REMOVE_TYPE_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_LED_STRIPS_BUS_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_STRIPS_ADD_BUS_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_REMOVE_BUS_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_LED_STRIPS_LED_COUNT_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_STRIPS_ADD_LED_COUNT_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_REMOVE_LED_COUNT_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_LED_STRIPS_VOLTAGE_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_STRIPS_ADD_VOLTAGE_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_REMOVE_VOLTAGE_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_BACK_TEXT)],
+    ],
+    resize_keyboard=True,
+)
+
+WAREHOUSE_SETTINGS_LED_STRIPS_IP_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=LED_STRIPS_ADD_IP_TEXT)],
+        [KeyboardButton(text=LED_STRIPS_REMOVE_IP_TEXT)],
         [KeyboardButton(text=LED_STRIPS_BACK_TEXT)],
     ],
     resize_keyboard=True,
@@ -2175,6 +2364,76 @@ async def fetch_led_strip_series_by_manufacturer(manufacturer_name: str) -> list
             ORDER BY LOWER(name)
             """,
             manufacturer_id,
+        )
+    return [row["name"] for row in rows]
+
+
+async def fetch_led_strip_colors() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM led_strip_color_options ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
+async def fetch_led_strip_cut_options() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM led_strip_cut_options ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
+async def fetch_led_strip_type_options() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM led_strip_type_options ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
+async def fetch_led_strip_bus_options() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM led_strip_bus_options ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
+async def fetch_led_strip_led_counts() -> list[int]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT value FROM led_strip_led_count_options ORDER BY value"
+        )
+    return [row["value"] for row in rows]
+
+
+async def fetch_led_strip_voltage_options() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM led_strip_voltage_options ORDER BY LOWER(name)"
+        )
+    return [row["name"] for row in rows]
+
+
+async def fetch_led_strip_ip_options() -> list[str]:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM led_strip_ip_options ORDER BY LOWER(name)"
         )
     return [row["name"] for row in rows]
 
@@ -3669,6 +3928,195 @@ async def delete_led_strip_series(
             series_name,
         )
     return "deleted" if result.endswith(" 1") else "not_found"
+
+
+async def insert_led_strip_color_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_strip_color_options (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_led_strip_color_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_strip_color_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_led_strip_cut_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_strip_cut_options (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_led_strip_cut_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_strip_cut_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_led_strip_type_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_strip_type_options (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_led_strip_type_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_strip_type_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_led_strip_bus_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_strip_bus_options (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_led_strip_bus_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_strip_bus_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_led_strip_led_count(value: int) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_strip_led_count_options (value)
+            VALUES ($1)
+            ON CONFLICT (value) DO NOTHING
+            RETURNING id
+            """,
+            value,
+        )
+    return row is not None
+
+
+async def delete_led_strip_led_count(value: int) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_strip_led_count_options WHERE value = $1",
+            value,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_led_strip_voltage_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_strip_voltage_options (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_led_strip_voltage_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_strip_voltage_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
+
+
+async def insert_led_strip_ip_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO led_strip_ip_options (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
+            RETURNING id
+            """,
+            name,
+        )
+    return row is not None
+
+
+async def delete_led_strip_ip_option(name: str) -> bool:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM led_strip_ip_options WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+    return result.endswith(" 1")
 
 
 async def insert_power_supply_manufacturer(name: str) -> bool:
@@ -5459,6 +5907,14 @@ def build_lens_counts_keyboard(counts: list[int]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def build_led_strip_led_counts_keyboard(counts: list[int]) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = []
+    for value in counts:
+        rows.append([KeyboardButton(text=str(value))])
+    rows.append([KeyboardButton(text=CANCEL_TEXT)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 def build_led_module_articles_keyboard(articles: list[str]) -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = []
     for article in articles:
@@ -5867,6 +6323,13 @@ async def send_led_module_series_menu(message: Message) -> None:
 
 async def send_led_strips_settings_overview(message: Message) -> None:
     manufacturers = await fetch_led_strip_manufacturers_with_series()
+    colors = await fetch_led_strip_colors()
+    cut_options = await fetch_led_strip_cut_options()
+    type_options = await fetch_led_strip_type_options()
+    bus_options = await fetch_led_strip_bus_options()
+    led_counts = await fetch_led_strip_led_counts()
+    voltage_options = await fetch_led_strip_voltage_options()
+    ip_options = await fetch_led_strip_ip_options()
     if manufacturers:
         lines: list[str] = []
         for manufacturer in manufacturers:
@@ -5881,19 +6344,35 @@ async def send_led_strips_settings_overview(message: Message) -> None:
                 )
             )
         formatted = "\n".join(lines)
-        text = (
-            "⚙️ Настройки склада → Электрика → Led лента.\n\n"
+        manufacturers_text = (
             "Доступные производители и серии:\n"
             f"{formatted}\n\n"
-            "Используйте кнопки «🏭 Производитель Led ленты» и «🎬 Серия Led ленты», чтобы управлять списками."
+            "Используйте кнопки «🏭 Производитель Led ленты» и "
+            "«🎬 Серия Led ленты», чтобы управлять списками."
         )
     else:
-        text = (
-            "⚙️ Настройки склада → Электрика → Led лента.\n\n"
+        manufacturers_text = (
             "Производители ещё не добавлены. Сначала добавьте производителя Led ленты,"
             " затем сможете указать его серии."
         )
-    await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_KB)
+    attributes_sections = [
+        f"Цвета:\n{format_materials_list(colors)}",
+        f"Кратность реза:\n{format_materials_list(cut_options)}",
+        f"Типы:\n{format_materials_list(type_options)}",
+        f"Шины:\n{format_materials_list(bus_options)}",
+        f"Кол-во диодов:\n{format_materials_list([str(value) for value in led_counts])}",
+        f"Напряжения:\n{format_materials_list(voltage_options)}",
+        f"IP:\n{format_materials_list(ip_options)}",
+    ]
+    attributes_text = "\n\n".join(attributes_sections)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led лента.\n\n"
+        f"{manufacturers_text}\n\n"
+        "📋 Общие справочники Led ленты:\n"
+        f"{attributes_text}\n\n"
+        "Используйте кнопки раздела, чтобы добавлять или удалять значения.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_KB,
+    )
 
 
 async def send_led_strips_manufacturers_menu(message: Message) -> None:
@@ -5936,6 +6415,90 @@ async def send_led_strips_series_menu(message: Message) -> None:
             "Сначала добавьте производителей Led ленты, чтобы указывать их серии."
         )
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_SERIES_KB)
+
+
+async def send_led_strips_colors_menu(message: Message) -> None:
+    colors = await fetch_led_strip_colors()
+    formatted = format_materials_list(colors)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led лента → Цвет Led ленты.\n\n"
+        "Доступные цвета:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить значение.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_COLORS_KB,
+    )
+
+
+async def send_led_strips_cut_menu(message: Message) -> None:
+    cut_options = await fetch_led_strip_cut_options()
+    formatted = format_materials_list(cut_options)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led лента → Кратность реза Led ленты.\n\n"
+        "Доступные значения:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить значение.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_CUT_KB,
+    )
+
+
+async def send_led_strips_type_menu(message: Message) -> None:
+    type_options = await fetch_led_strip_type_options()
+    formatted = format_materials_list(type_options)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led лента → Тип Led ленты.\n\n"
+        "Доступные типы:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить значение.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_TYPE_KB,
+    )
+
+
+async def send_led_strips_bus_menu(message: Message) -> None:
+    bus_options = await fetch_led_strip_bus_options()
+    formatted = format_materials_list(bus_options)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led лента → Шина Led ленты.\n\n"
+        "Доступные значения:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить значение.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_BUS_KB,
+    )
+
+
+async def send_led_strips_led_count_menu(message: Message) -> None:
+    led_counts = await fetch_led_strip_led_counts()
+    formatted = format_materials_list([str(value) for value in led_counts])
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led лента → Кол-во диодов в Led ленте.\n\n"
+        "Доступные значения:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить значение.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_LED_COUNT_KB,
+    )
+
+
+async def send_led_strips_voltage_menu(message: Message) -> None:
+    voltage_options = await fetch_led_strip_voltage_options()
+    formatted = format_materials_list(voltage_options)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led лента → Напряжение Led ленты.\n\n"
+        "Доступные напряжения:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить значение.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_VOLTAGE_KB,
+    )
+
+
+async def send_led_strips_ip_menu(message: Message) -> None:
+    ip_options = await fetch_led_strip_ip_options()
+    formatted = format_materials_list(ip_options)
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Led лента → IP Led ленты.\n\n"
+        "Доступные значения:\n"
+        f"{formatted}\n\n"
+        "Используйте кнопки ниже, чтобы добавить или удалить значение.",
+        reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_IP_KB,
+    )
 
 
 async def send_power_supply_manufacturers_menu(message: Message) -> None:
@@ -11135,6 +11698,62 @@ async def handle_led_strips_series_menu(message: Message, state: FSMContext) -> 
     await send_led_strips_series_menu(message)
 
 
+@dp.message(F.text == LED_STRIPS_COLORS_MENU_TEXT)
+async def handle_led_strips_colors_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_strips_colors_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_CUT_MENU_TEXT)
+async def handle_led_strips_cut_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_strips_cut_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_TYPE_MENU_TEXT)
+async def handle_led_strips_type_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_strips_type_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_BUS_MENU_TEXT)
+async def handle_led_strips_bus_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_strips_bus_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_LED_COUNT_MENU_TEXT)
+async def handle_led_strips_led_count_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_strips_led_count_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_VOLTAGE_MENU_TEXT)
+async def handle_led_strips_voltage_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_strips_voltage_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_IP_MENU_TEXT)
+async def handle_led_strips_ip_menu(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.clear()
+    await send_led_strips_ip_menu(message)
+
+
 @dp.message(F.text == LED_STRIPS_BACK_TEXT)
 async def handle_back_to_led_strips_settings(
     message: Message, state: FSMContext
@@ -12344,6 +12963,470 @@ async def process_remove_led_strip_series(
         )
     await state.clear()
     await send_led_strips_settings_overview(message)
+
+
+@dp.message(F.text == LED_STRIPS_ADD_COLOR_TEXT)
+async def handle_add_led_strip_color(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageLedStripColorStates.waiting_for_new_color_value)
+    colors = await fetch_led_strip_colors()
+    existing_text = format_materials_list(colors)
+    await message.answer(
+        "Введите цвет Led ленты.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedStripColorStates.waiting_for_new_color_value)
+async def process_new_led_strip_color(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    color_value = (message.text or "").strip()
+    if not color_value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_led_strip_color_option(color_value):
+        await message.answer(f"✅ Цвет «{color_value}» добавлен.")
+    else:
+        await message.answer(f"ℹ️ Цвет «{color_value}» уже есть в списке.")
+    await state.clear()
+    await send_led_strips_colors_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_REMOVE_COLOR_TEXT)
+async def handle_remove_led_strip_color(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    colors = await fetch_led_strip_colors()
+    if not colors:
+        await message.answer(
+            "Список цветов пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_COLORS_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageLedStripColorStates.waiting_for_color_value_to_delete)
+    await message.answer(
+        "Выберите цвет, который нужно удалить:",
+        reply_markup=build_colors_keyboard(colors),
+    )
+
+
+@dp.message(ManageLedStripColorStates.waiting_for_color_value_to_delete)
+async def process_remove_led_strip_color(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    color_value = (message.text or "").strip()
+    if not color_value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_led_strip_color_option(color_value):
+        await message.answer(f"🗑 Цвет «{color_value}» удалён.")
+    else:
+        await message.answer(f"ℹ️ Цвет «{color_value}» не найден в списке.")
+    await state.clear()
+    await send_led_strips_colors_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_ADD_CUT_TEXT)
+async def handle_add_led_strip_cut_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageLedStripCutStates.waiting_for_new_cut_value)
+    existing = await fetch_led_strip_cut_options()
+    existing_text = format_materials_list(existing)
+    await message.answer(
+        "Введите значение кратности реза Led ленты.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedStripCutStates.waiting_for_new_cut_value)
+async def process_new_led_strip_cut_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_led_strip_cut_option(value):
+        await message.answer(f"✅ Кратность реза «{value}» добавлена.")
+    else:
+        await message.answer(f"ℹ️ Кратность реза «{value}» уже есть в списке.")
+    await state.clear()
+    await send_led_strips_cut_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_REMOVE_CUT_TEXT)
+async def handle_remove_led_strip_cut_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    existing = await fetch_led_strip_cut_options()
+    if not existing:
+        await message.answer(
+            "Список значений пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_CUT_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageLedStripCutStates.waiting_for_cut_value_to_delete)
+    await message.answer(
+        "Выберите значение, которое нужно удалить:",
+        reply_markup=build_materials_keyboard(existing),
+    )
+
+
+@dp.message(ManageLedStripCutStates.waiting_for_cut_value_to_delete)
+async def process_remove_led_strip_cut_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_led_strip_cut_option(value):
+        await message.answer(f"🗑 Кратность реза «{value}» удалена.")
+    else:
+        await message.answer(f"ℹ️ Кратность реза «{value}» не найдена в списке.")
+    await state.clear()
+    await send_led_strips_cut_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_ADD_TYPE_TEXT)
+async def handle_add_led_strip_type_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageLedStripTypeStates.waiting_for_new_type_value)
+    existing = await fetch_led_strip_type_options()
+    existing_text = format_materials_list(existing)
+    await message.answer(
+        "Введите тип Led ленты.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedStripTypeStates.waiting_for_new_type_value)
+async def process_new_led_strip_type_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_led_strip_type_option(value):
+        await message.answer(f"✅ Тип «{value}» добавлен.")
+    else:
+        await message.answer(f"ℹ️ Тип «{value}» уже есть в списке.")
+    await state.clear()
+    await send_led_strips_type_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_REMOVE_TYPE_TEXT)
+async def handle_remove_led_strip_type_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    existing = await fetch_led_strip_type_options()
+    if not existing:
+        await message.answer(
+            "Список типов пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_TYPE_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageLedStripTypeStates.waiting_for_type_value_to_delete)
+    await message.answer(
+        "Выберите тип, который нужно удалить:",
+        reply_markup=build_materials_keyboard(existing),
+    )
+
+
+@dp.message(ManageLedStripTypeStates.waiting_for_type_value_to_delete)
+async def process_remove_led_strip_type_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_led_strip_type_option(value):
+        await message.answer(f"🗑 Тип «{value}» удалён.")
+    else:
+        await message.answer(f"ℹ️ Тип «{value}» не найден в списке.")
+    await state.clear()
+    await send_led_strips_type_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_ADD_BUS_TEXT)
+async def handle_add_led_strip_bus_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageLedStripBusStates.waiting_for_new_bus_value)
+    existing = await fetch_led_strip_bus_options()
+    existing_text = format_materials_list(existing)
+    await message.answer(
+        "Введите значение шины Led ленты.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedStripBusStates.waiting_for_new_bus_value)
+async def process_new_led_strip_bus_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_led_strip_bus_option(value):
+        await message.answer(f"✅ Шина «{value}» добавлена.")
+    else:
+        await message.answer(f"ℹ️ Шина «{value}» уже есть в списке.")
+    await state.clear()
+    await send_led_strips_bus_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_REMOVE_BUS_TEXT)
+async def handle_remove_led_strip_bus_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    existing = await fetch_led_strip_bus_options()
+    if not existing:
+        await message.answer(
+            "Список значений пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_BUS_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageLedStripBusStates.waiting_for_bus_value_to_delete)
+    await message.answer(
+        "Выберите значение, которое нужно удалить:",
+        reply_markup=build_materials_keyboard(existing),
+    )
+
+
+@dp.message(ManageLedStripBusStates.waiting_for_bus_value_to_delete)
+async def process_remove_led_strip_bus_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_led_strip_bus_option(value):
+        await message.answer(f"🗑 Значение «{value}» удалено.")
+    else:
+        await message.answer(f"ℹ️ Значение «{value}» не найдено в списке.")
+    await state.clear()
+    await send_led_strips_bus_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_ADD_LED_COUNT_TEXT)
+async def handle_add_led_strip_led_count(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageLedStripLedCountStates.waiting_for_new_led_count)
+    existing = await fetch_led_strip_led_counts()
+    existing_text = format_materials_list([str(value) for value in existing])
+    await message.answer(
+        "Введите количество диодов (целое положительное число).\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedStripLedCountStates.waiting_for_new_led_count)
+async def process_new_led_strip_led_count(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = parse_positive_integer(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Введите положительное целое число. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if await insert_led_strip_led_count(value):
+        await message.answer(f"✅ Количество диодов «{value}» добавлено.")
+    else:
+        await message.answer(f"ℹ️ Количество диодов «{value}» уже есть в списке.")
+    await state.clear()
+    await send_led_strips_led_count_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_REMOVE_LED_COUNT_TEXT)
+async def handle_remove_led_strip_led_count(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    existing = await fetch_led_strip_led_counts()
+    if not existing:
+        await message.answer(
+            "Список значений пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_LED_COUNT_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageLedStripLedCountStates.waiting_for_led_count_to_delete)
+    await message.answer(
+        "Выберите значение, которое нужно удалить:",
+        reply_markup=build_led_strip_led_counts_keyboard(existing),
+    )
+
+
+@dp.message(ManageLedStripLedCountStates.waiting_for_led_count_to_delete)
+async def process_remove_led_strip_led_count(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = parse_positive_integer(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Введите положительное целое число. Попробуйте снова.",
+            reply_markup=CANCEL_KB,
+        )
+        return
+    if await delete_led_strip_led_count(value):
+        await message.answer(f"🗑 Количество диодов «{value}» удалено.")
+        await state.clear()
+        await send_led_strips_led_count_menu(message)
+    else:
+        await message.answer(
+            f"ℹ️ Количество диодов «{value}» не найдено в списке.",
+            reply_markup=CANCEL_KB,
+        )
+
+
+@dp.message(F.text == LED_STRIPS_ADD_VOLTAGE_TEXT)
+async def handle_add_led_strip_voltage_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageLedStripVoltageStates.waiting_for_new_voltage_value)
+    existing = await fetch_led_strip_voltage_options()
+    existing_text = format_materials_list(existing)
+    await message.answer(
+        "Введите значение напряжения Led ленты.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedStripVoltageStates.waiting_for_new_voltage_value)
+async def process_new_led_strip_voltage_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_led_strip_voltage_option(value):
+        await message.answer(f"✅ Напряжение «{value}» добавлено.")
+    else:
+        await message.answer(f"ℹ️ Напряжение «{value}» уже есть в списке.")
+    await state.clear()
+    await send_led_strips_voltage_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_REMOVE_VOLTAGE_TEXT)
+async def handle_remove_led_strip_voltage_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    existing = await fetch_led_strip_voltage_options()
+    if not existing:
+        await message.answer(
+            "Список напряжений пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_VOLTAGE_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageLedStripVoltageStates.waiting_for_voltage_value_to_delete)
+    await message.answer(
+        "Выберите значение, которое нужно удалить:",
+        reply_markup=build_materials_keyboard(existing),
+    )
+
+
+@dp.message(ManageLedStripVoltageStates.waiting_for_voltage_value_to_delete)
+async def process_remove_led_strip_voltage_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_led_strip_voltage_option(value):
+        await message.answer(f"🗑 Напряжение «{value}» удалено.")
+    else:
+        await message.answer(f"ℹ️ Напряжение «{value}» не найдено в списке.")
+    await state.clear()
+    await send_led_strips_voltage_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_ADD_IP_TEXT)
+async def handle_add_led_strip_ip_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    await state.set_state(ManageLedStripIpStates.waiting_for_new_ip_value)
+    existing = await fetch_led_strip_ip_options()
+    existing_text = format_materials_list(existing)
+    await message.answer(
+        "Введите значение IP Led ленты.\n\n"
+        f"Уже добавлены:\n{existing_text}",
+        reply_markup=CANCEL_KB,
+    )
+
+
+@dp.message(ManageLedStripIpStates.waiting_for_new_ip_value)
+async def process_new_led_strip_ip_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await insert_led_strip_ip_option(value):
+        await message.answer(f"✅ IP «{value}» добавлен.")
+    else:
+        await message.answer(f"ℹ️ IP «{value}» уже есть в списке.")
+    await state.clear()
+    await send_led_strips_ip_menu(message)
+
+
+@dp.message(F.text == LED_STRIPS_REMOVE_IP_TEXT)
+async def handle_remove_led_strip_ip_option(message: Message, state: FSMContext) -> None:
+    if not await ensure_admin_access(message, state):
+        return
+    existing = await fetch_led_strip_ip_options()
+    if not existing:
+        await message.answer(
+            "Список значений IP пуст. Добавьте значения перед удалением.",
+            reply_markup=WAREHOUSE_SETTINGS_LED_STRIPS_IP_KB,
+        )
+        await state.clear()
+        return
+    await state.set_state(ManageLedStripIpStates.waiting_for_ip_value_to_delete)
+    await message.answer(
+        "Выберите значение IP, которое нужно удалить:",
+        reply_markup=build_materials_keyboard(existing),
+    )
+
+
+@dp.message(ManageLedStripIpStates.waiting_for_ip_value_to_delete)
+async def process_remove_led_strip_ip_option(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("⚠️ Значение не может быть пустым. Попробуйте снова.")
+        return
+    if await delete_led_strip_ip_option(value):
+        await message.answer(f"🗑 IP «{value}» удалён.")
+    else:
+        await message.answer(f"ℹ️ IP «{value}» не найден в списке.")
+    await state.clear()
+    await send_led_strips_ip_menu(message)
 
 
 @dp.message(F.text == LED_MODULES_ADD_MANUFACTURER_TEXT)
