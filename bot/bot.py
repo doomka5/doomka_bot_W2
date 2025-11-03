@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 import asyncpg
+from asyncpg.exceptions import ForeignKeyViolationError
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -884,6 +885,10 @@ class ManagePowerSupplySeriesStates(StatesGroup):
     waiting_for_new_series_name = State()
     waiting_for_manufacturer_for_series_deletion = State()
     waiting_for_series_name_to_delete = State()
+
+
+class ManagePowerSupplyBaseStates(StatesGroup):
+    waiting_for_article_to_delete = State()
 
 
 class ManagePowerSupplyVoltageStates(StatesGroup):
@@ -2990,6 +2995,20 @@ async def get_generated_power_supply_by_article(article: str) -> Optional[dict[s
     if row is None:
         return None
     return dict(row)
+
+
+async def delete_generated_power_supply(power_supply_id: int) -> str:
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialised")
+    async with db_pool.acquire() as conn:
+        try:
+            result = await conn.execute(
+                "DELETE FROM generated_power_supplies WHERE id = $1",
+                power_supply_id,
+            )
+        except ForeignKeyViolationError:
+            return "in_use"
+    return "deleted" if result.endswith(" 1") else "not_found"
 
 
 async def get_generated_led_module_by_article(article: str) -> Optional[dict[str, Any]]:
@@ -6559,6 +6578,32 @@ async def send_power_supply_base_menu(message: Message) -> None:
             "чтобы добавить запись."
         )
     await message.answer(text, reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB)
+
+
+async def send_power_supply_deletion_prompt(message: Message, state: FSMContext) -> None:
+    supplies = await fetch_generated_power_supplies_with_details()
+    if not supplies:
+        await state.clear()
+        await message.answer(
+            "⚙️ Настройки склада → Электрика → Блоки питания → Блоки питания baza.\n\n"
+            "База блоков питания пуста. Используйте кнопку «Сгенерировать блок питания», "
+            "чтобы добавить запись.",
+            reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB,
+        )
+        return
+    formatted = format_power_supply_records_list_for_message(supplies)
+    overview = (
+        "\n\nСгенерированные блоки питания:\n" + formatted
+        if formatted and formatted != "—"
+        else ""
+    )
+    await message.answer(
+        "⚙️ Настройки склада → Электрика → Блоки питания → Блоки питания baza.\n\n"
+        "Выберите блок питания, который нужно удалить из базы." + overview,
+        reply_markup=build_power_supply_articles_keyboard(
+            [item["article"] for item in supplies if item.get("article")]
+        ),
+    )
 
 
 async def send_power_supply_power_menu(message: Message) -> None:
@@ -12599,10 +12644,45 @@ async def handle_delete_power_supply(message: Message, state: FSMContext) -> Non
     if not await ensure_admin_access(message, state):
         return
     await state.clear()
-    await message.answer(
-        "🗑️ Удаление блока питания находится в разработке.",
-        reply_markup=WAREHOUSE_SETTINGS_POWER_SUPPLIES_BASE_KB,
+    await state.set_state(
+        ManagePowerSupplyBaseStates.waiting_for_article_to_delete
     )
+    await send_power_supply_deletion_prompt(message, state)
+
+
+@dp.message(ManagePowerSupplyBaseStates.waiting_for_article_to_delete)
+async def process_delete_power_supply(message: Message, state: FSMContext) -> None:
+    if await _process_cancel_if_requested(message, state):
+        return
+    article = (message.text or "").strip()
+    if not article:
+        await message.answer("⚠️ Укажите артикул блока питания из списка.")
+        await send_power_supply_deletion_prompt(message, state)
+        return
+    record = await get_generated_power_supply_by_article(article)
+    if record is None:
+        await message.answer(
+            "ℹ️ Такой блок питания не найден в базе. Выберите вариант из списка.",
+        )
+        await send_power_supply_deletion_prompt(message, state)
+        return
+    status = await delete_generated_power_supply(int(record["id"]))
+    if status == "in_use":
+        await message.answer(
+            "⚠️ Нельзя удалить этот блок питания, так как он используется в учёте склада.\n"
+            "Сначала удалите связанные записи о приходе или списании.",
+        )
+        await send_power_supply_deletion_prompt(message, state)
+        return
+    if status != "deleted":
+        await message.answer(
+            "⚠️ Не удалось удалить блок питания. Попробуйте выбрать другую запись.",
+        )
+        await send_power_supply_deletion_prompt(message, state)
+        return
+    await state.clear()
+    await message.answer(f"🗑 Блок питания «{article}» удалён из базы.")
+    await send_power_supply_base_menu(message)
 
 
 @dp.message(F.text == LED_MODULES_BACK_TEXT)
@@ -15327,6 +15407,12 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
     ):
         await state.clear()
         await send_power_supplies_settings_overview(message)
+        return
+    if current_state and current_state.startswith(
+        ManagePowerSupplyBaseStates.__name__
+    ):
+        await state.clear()
+        await send_power_supply_base_menu(message)
         return
     if current_state and current_state.startswith(
         ManagePowerSupplyPowerStates.__name__
