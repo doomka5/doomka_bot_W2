@@ -305,6 +305,17 @@ async def _render_table(
         columns = await fetch_columns(conn, table_info["schema"], table_info["table"])
         rows, applied_sort, applied_order = await fetch_rows(conn, table_info, columns, search, sort, order)
 
+    export_url = request.url_for("export_table", table_alias=alias)
+    query_params: dict[str, str] = {}
+    if search:
+        query_params["search"] = search
+    if applied_sort:
+        query_params["sort"] = applied_sort
+    if applied_order:
+        query_params["order"] = applied_order
+    if query_params:
+        export_url = f"{export_url}?{urlencode(query_params)}"
+
     context = {
         "request": request,
         "columns": columns,
@@ -314,6 +325,7 @@ async def _render_table(
         "order": applied_order,
         "message": message,
         "error": error,
+        "export_url": export_url,
     }
     return templates.TemplateResponse(template_name, context)
 
