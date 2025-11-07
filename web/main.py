@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 import asyncpg
 from fastapi import (Depends, FastAPI, File, Form, HTTPException, Request,
-                     UploadFile, status)
+                     Response, UploadFile, status)
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -376,7 +376,7 @@ async def add_item_form(
 async def add_item(
     request: Request,
     item_type: str = Form(...),
-) -> RedirectResponse | HTMLResponse:
+) -> Response:
     item_type = item_type if item_type in TABLE_ALIASES else "materials"
     form = await request.form()
     pool = await get_pool()
