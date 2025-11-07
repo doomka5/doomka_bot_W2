@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Плёнки — Doomka W2{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <h2>🎞 Плёнки</h2>
+    <div class="page-actions">
+        <a class="button" href="{{ url_for('export_table', table_alias='films', search=search, sort=sort, order=order) }}">⬇️ Экспорт в Excel</a>
+    </div>
+</section>
+
+{% if message %}
+<div class="alert success">{{ message }}</div>
+{% endif %}
+{% if error %}
+<div class="alert error">{{ error }}</div>
+{% endif %}
+
+<form method="get" class="toolbar">
+    <label for="search">Фильтр по текстовым полям:</label>
+    <input type="text" id="search" name="search" value="{{ search }}" placeholder="Введите часть артикула, цвета или склада">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="order" value="{{ order }}">
+    <button type="submit">Применить</button>
+    <a class="button secondary" href="{{ url_for('films_page') }}">Сбросить</a>
+</form>
+
+<form action="{{ url_for('import_table', table_alias='films') }}" method="post" enctype="multipart/form-data" class="toolbar">
+    <label for="films-file">Импорт из Excel (.xlsx):</label>
+    <input type="file" id="films-file" name="file" accept=".xlsx" required>
+    <button type="submit">Загрузить</button>
+</form>
+
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+            {% for column in columns %}
+                {% set next_order = 'desc' if sort == column.name and order == 'asc' else 'asc' %}
+                <th>
+                    <a href="{{ url_for('films_page', search=search, sort=column.name, order=next_order) }}">
+                        {{ column.title }}
+                        {% if sort == column.name %}
+                            <span class="sort-indicator">{{ '↑' if order == 'asc' else '↓' }}</span>
+                        {% endif %}
+                    </a>
+                </th>
+            {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+            <tr>
+            {% for column in columns %}
+                <td>{{ row[column.name] | format_value }}</td>
+            {% endfor %}
+            </tr>
+        {% else %}
+            <tr>
+                <td class="empty" colspan="{{ columns|length }}">Нет данных</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Главная — Doomka W2{% endblock %}
+
+{% block content %}
+<section class="hero">
+    <h2>CRM-панель для управления складом рекламных материалов</h2>
+    <p>Используйте интерфейс для просмотра, поиска и добавления данных по листовым материалам и плёнкам.</p>
+</section>
+<section class="actions-grid">
+    <a class="action-card" href="{{ url_for('materials_page') }}">
+        <span class="emoji">📄</span>
+        <span class="label">Листовые материалы</span>
+    </a>
+    <a class="action-card" href="{{ url_for('films_page') }}">
+        <span class="emoji">🎞</span>
+        <span class="label">Плёнки</span>
+    </a>
+    <a class="action-card" href="{{ url_for('add_item_form') }}">
+        <span class="emoji">➕</span>
+        <span class="label">Добавить запись</span>
+    </a>
+    <a class="action-card" href="{{ url_for('materials_page') }}?search=">
+        <span class="emoji">🔍</span>
+        <span class="label">Поиск</span>
+    </a>
+</section>
+{% endblock %}

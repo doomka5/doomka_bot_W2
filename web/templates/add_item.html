@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Добавление записи — Doomka W2{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <h2>➕ Добавить запись</h2>
+</section>
+
+{% if message %}
+<div class="alert success">{{ message }}</div>
+{% endif %}
+{% if error %}
+<div class="alert error">{{ error }}</div>
+{% endif %}
+
+<form method="get" class="toolbar">
+    <label for="type">Тип записи:</label>
+    <select id="type" name="type">
+        <option value="materials" {% if item_type == 'materials' %}selected{% endif %}>Листовой материал</option>
+        <option value="films" {% if item_type == 'films' %}selected{% endif %}>Плёнка</option>
+    </select>
+    <button type="submit">Выбрать</button>
+</form>
+
+{% if columns %}
+<form method="post" class="form-card">
+    <input type="hidden" name="item_type" value="{{ item_type }}">
+    <div class="form-grid">
+    {% for column in columns %}
+        <label class="form-field" for="{{ column.name }}">
+            <span>{{ column.title }}{% if column.required %}*{% endif %}</span>
+            {% if column.input_type == 'textarea' %}
+            <textarea id="{{ column.name }}" name="{{ column.name }}" rows="3" {% if column.required %}required{% endif %}></textarea>
+            {% else %}
+            <input id="{{ column.name }}" name="{{ column.name }}" type="{{ column.input_type }}" {% if column.step %}step="{{ column.step }}"{% endif %} {% if column.required %}required{% endif %}>
+            {% endif %}
+        </label>
+    {% endfor %}
+    </div>
+    <p class="form-hint">* Поля, помеченные звёздочкой, обязательны. Пустые значения будут сохранены как NULL.</p>
+    <button type="submit" class="button">Сохранить запись</button>
+</form>
+{% endif %}
+{% endblock %}
