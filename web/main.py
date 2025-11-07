@@ -372,7 +372,7 @@ async def add_item_form(
     return templates.TemplateResponse("add_item.html", context)
 
 
-@app.post("/add", response_class=HTMLResponse)
+@app.post("/add")
 async def add_item(
     request: Request,
     item_type: str = Form(...),
