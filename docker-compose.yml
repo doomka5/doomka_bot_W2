@@ -22,7 +22,7 @@ services:
       dockerfile: Dockerfile
     container_name: telegram_bot_v2
     environment:
-      BOT_TOKEN: "8429030887:AAH2xxAGtNsuejvzjyzzj3LXED2BdiK2V4k"
+      BOT_TOKEN: "191567919:AAE3Y3KWq3oQnOyY6D-pOBUDVXIxYp87Vys"
       DB_HOST: postgres_bot
       DB_PORT: 5432
       DB_NAME: botdb
