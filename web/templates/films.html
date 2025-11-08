@@ -39,7 +39,7 @@
             {% for column in columns %}
                 {% set next_order = 'desc' if sort == column.name and order == 'asc' else 'asc' %}
                 <th>
-                    <a href="{{ url_for('films_page', search=search, sort=column.name, order=next_order) }}">
+                    <a href="{{ url_with_query(request, route_name, search=search, sort=column.name, order=next_order) }}">
                         {{ column.title }}
                         {% if sort == column.name %}
                             <span class="sort-indicator">{{ '↑' if order == 'asc' else '↓' }}</span>

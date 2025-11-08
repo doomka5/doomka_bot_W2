@@ -41,6 +41,17 @@ def _format_value(value: Any) -> str:
 
 templates.env.filters["format_value"] = _format_value
 
+
+def url_with_query(request: Request, route_name: str, **params: Any) -> str:
+    base_url = request.url_for(route_name)
+    query = {key: value for key, value in params.items() if value not in (None, "")}
+    if query:
+        return f"{base_url}?{urlencode(query)}"
+    return base_url
+
+
+templates.env.globals["url_with_query"] = url_with_query
+
 DB_SETTINGS = {
     "user": os.getenv("DB_USER", "botuser"),
     "password": os.getenv("DB_PASS", "botpass"),
@@ -52,6 +63,11 @@ DB_SETTINGS = {
 TABLE_ALIASES: dict[str, list[str]] = {
     "materials": ["materials", "warehouse_plastics"],
     "films": ["films", "warehouse_films"],
+}
+
+ROUTE_NAMES: dict[str, str] = {
+    "materials": "materials_page",
+    "films": "films_page",
 }
 
 TEXT_TYPES = {"character varying", "text", "citext"}
@@ -316,6 +332,8 @@ async def _render_table(
     if query_params:
         export_url = f"{export_url}?{urlencode(query_params)}"
 
+    route_name = ROUTE_NAMES.get(alias, f"{alias}_page")
+
     context = {
         "request": request,
         "columns": columns,
@@ -326,6 +344,7 @@ async def _render_table(
         "message": message,
         "error": error,
         "export_url": export_url,
+        "route_name": route_name,
     }
     return templates.TemplateResponse(template_name, context)
 
