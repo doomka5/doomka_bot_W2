@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}Блоки питания — Doomka W2{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <h2>🔌 Блоки питания</h2>
+    <div class="page-actions">
+        <a class="button" href="{{ export_url }}">⬇️ Экспорт в Excel</a>
+    </div>
+</section>
+
+{% if message %}
+<div class="alert success">{{ message }}</div>
+{% endif %}
+{% if error %}
+<div class="alert error">{{ error }}</div>
+{% endif %}
+
+<form method="get" class="toolbar filters">
+    <div class="field-group">
+        <label for="search">Фильтр по текстовым полям:</label>
+        <input type="text" id="search" name="search" value="{{ search }}" placeholder="Введите часть артикула или характеристики">
+    </div>
+    <div class="field-group">
+        <label for="manufacturer">Производитель:</label>
+        <select id="manufacturer" name="manufacturer">
+            <option value="">Все</option>
+            {% for option in filter_options.get('manufacturer', []) %}
+                <option value="{{ option.value }}" {% if filters.get('manufacturer') == option.value %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="field-group">
+        <label for="series">Серия:</label>
+        <select id="series" name="series">
+            <option value="">Все</option>
+            {% for option in filter_options.get('series', []) %}
+                <option value="{{ option.value }}" {% if filters.get('series') == option.value %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="field-group">
+        <label for="power">Мощность:</label>
+        <select id="power" name="power">
+            <option value="">Все</option>
+            {% for option in filter_options.get('power', []) %}
+                <option value="{{ option.value }}" {% if filters.get('power') == option.value %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="field-group">
+        <label for="voltage">Напряжение:</label>
+        <select id="voltage" name="voltage">
+            <option value="">Все</option>
+            {% for option in filter_options.get('voltage', []) %}
+                <option value="{{ option.value }}" {% if filters.get('voltage') == option.value %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="field-group">
+        <label for="ip">Степень защиты IP:</label>
+        <select id="ip" name="ip">
+            <option value="">Все</option>
+            {% for option in filter_options.get('ip', []) %}
+                <option value="{{ option.value }}" {% if filters.get('ip') == option.value %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="order" value="{{ order }}">
+    <button type="submit">Применить</button>
+    <a class="button secondary" href="{{ url_for('power_supplies_page') }}">Сбросить</a>
+</form>
+
+<div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+            {% for column in columns %}
+                {% set next_order = 'desc' if sort == column.name and order == 'asc' else 'asc' %}
+                <th>
+                    <a href="{{ url_with_query(request, route_name, search=search, sort=column.name, order=next_order, manufacturer=filters.get('manufacturer'), series=filters.get('series'), power=filters.get('power'), voltage=filters.get('voltage'), ip=filters.get('ip')) }}">
+                        {{ column.title }}
+                        {% if sort == column.name %}
+                            <span class="sort-indicator">{{ '↑' if order == 'asc' else '↓' }}</span>
+                        {% endif %}
+                    </a>
+                </th>
+            {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+            <tr>
+            {% for column in columns %}
+                <td>{{ row[column.name] | format_value }}</td>
+            {% endfor %}
+            </tr>
+        {% else %}
+            <tr>
+                <td class="empty" colspan="{{ columns|length }}">Нет данных</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
