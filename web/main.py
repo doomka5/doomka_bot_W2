@@ -69,6 +69,45 @@ ROUTE_NAMES: dict[str, str] = {
     "films": "films_page",
 }
 
+POWER_SUPPLY_COLUMNS: list[dict[str, Any]] = [
+    {"name": "article", "title": "Артикул", "data_type": "text"},
+    {"name": "manufacturer", "title": "Производитель", "data_type": "text"},
+    {"name": "series", "title": "Серия", "data_type": "text"},
+    {"name": "power", "title": "Мощность", "data_type": "text"},
+    {"name": "voltage", "title": "Напряжение", "data_type": "text"},
+    {"name": "ip", "title": "Степень защиты IP", "data_type": "text"},
+    {"name": "total_quantity", "title": "Количество на складе", "data_type": "integer"},
+]
+
+POWER_SUPPLY_SUMMARY_CTE = """
+WITH summary AS (
+    SELECT
+        gps.article,
+        manufacturer.name AS manufacturer,
+        series.name AS series,
+        power.name AS power,
+        voltage.name AS voltage,
+        ip.name AS ip,
+        COALESCE(SUM(wps.quantity), 0) AS total_quantity
+    FROM generated_power_supplies AS gps
+    JOIN power_supply_manufacturers AS manufacturer ON manufacturer.id = gps.manufacturer_id
+    JOIN power_supply_series AS series ON series.id = gps.series_id
+    JOIN power_supply_power_options AS power ON power.id = gps.power_option_id
+    JOIN power_supply_voltage_options AS voltage ON voltage.id = gps.voltage_option_id
+    JOIN power_supply_ip_options AS ip ON ip.id = gps.ip_option_id
+    LEFT JOIN warehouse_power_supplies AS wps ON wps.power_supply_id = gps.id
+    GROUP BY
+        gps.id,
+        gps.article,
+        manufacturer.name,
+        series.name,
+        power.name,
+        voltage.name,
+        ip.name
+    HAVING COALESCE(SUM(wps.quantity), 0) > 0
+)
+"""
+
 TEXT_TYPES = {"character varying", "text", "citext"}
 INT_TYPES = {"smallint", "integer", "bigint"}
 FLOAT_TYPES = {"double precision", "real"}
@@ -415,6 +454,78 @@ async def _render_table(
     return templates.TemplateResponse(template_name, context)
 
 
+async def fetch_power_supply_summary(
+    conn: asyncpg.Connection,
+    search: str,
+    sort: str | None,
+    order: str | None,
+    filters: dict[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], str, str]:
+    available_columns = {column["name"] for column in POWER_SUPPLY_COLUMNS}
+    sort_column = sort if sort in available_columns else "total_quantity"
+
+    if order is None:
+        order_direction = "desc" if sort_column == "total_quantity" else "asc"
+    else:
+        order_direction = "desc" if order.lower() == "desc" else "asc"
+
+    params: list[Any] = []
+    conditions: list[str] = []
+    param_index = 1
+
+    if search:
+        like_conditions = []
+        for column in ("article", "manufacturer", "series", "power", "voltage", "ip"):
+            like_conditions.append(f"summary.{column} ILIKE ${param_index}")
+            params.append(f"%{search}%")
+            param_index += 1
+        conditions.append("(" + " OR ".join(like_conditions) + ")")
+
+    if filters:
+        for column, value in filters.items():
+            if column not in available_columns:
+                continue
+            if value in (None, ""):
+                continue
+            conditions.append(f"summary.{column} = ${param_index}")
+            params.append(value)
+            param_index += 1
+
+    where_clause = ""
+    if conditions:
+        where_clause = " WHERE " + " AND ".join(conditions)
+
+    order_expression = "summary.total_quantity" if sort_column == "total_quantity" else f"summary.{sort_column}"
+
+    query = (
+        POWER_SUPPLY_SUMMARY_CTE
+        + "\nSELECT * FROM summary"
+        + where_clause
+        + f" ORDER BY {order_expression} {order_direction.upper()}, summary.article ASC"
+    )
+
+    records = await conn.fetch(query, *params)
+    rows = [dict(record) for record in records]
+    return rows, sort_column, order_direction
+
+
+async def fetch_power_supply_filter_options(conn: asyncpg.Connection) -> dict[str, list[dict[str, str]]]:
+    options: dict[str, list[dict[str, str]]] = {}
+    for column in ("manufacturer", "series", "power", "voltage", "ip"):
+        records = await conn.fetch(
+            POWER_SUPPLY_SUMMARY_CTE
+            + f"\nSELECT DISTINCT summary.{column} AS value FROM summary"
+            + f" WHERE summary.{column} IS NOT NULL"
+            + f" ORDER BY LOWER(summary.{column})"
+        )
+        options[column] = [
+            {"value": record["value"], "label": _format_value(record["value"])}
+            for record in records
+            if record["value"] is not None
+        ]
+    return options
+
+
 @app.get("/materials", response_class=HTMLResponse, name="materials_page")
 async def materials_page(
     request: Request,
@@ -456,6 +567,70 @@ async def films_page(
     error: str | None = None,
 ) -> HTMLResponse:
     return await _render_table(request, "films", "films.html", search, sort, order, message, error)
+
+
+@app.get("/power-supplies", response_class=HTMLResponse, name="power_supplies_page")
+async def power_supplies_page(
+    request: Request,
+    search: str = "",
+    manufacturer: str = "",
+    series: str = "",
+    power: str = "",
+    voltage: str = "",
+    ip: str = "",
+    sort: str | None = None,
+    order: str | None = None,
+    message: str | None = None,
+    error: str | None = None,
+) -> HTMLResponse:
+    filters = {
+        "manufacturer": manufacturer,
+        "series": series,
+        "power": power,
+        "voltage": voltage,
+        "ip": ip,
+    }
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows, applied_sort, applied_order = await fetch_power_supply_summary(
+            conn,
+            search,
+            sort,
+            order,
+            filters,
+        )
+        filter_options = await fetch_power_supply_filter_options(conn)
+
+    export_url = request.url_for("export_power_supplies")
+    query_params: dict[str, str] = {}
+    if search:
+        query_params["search"] = search
+    if applied_sort:
+        query_params["sort"] = applied_sort
+    if applied_order:
+        query_params["order"] = applied_order
+    for key, value in filters.items():
+        if value not in (None, ""):
+            query_params[key] = value
+    if query_params:
+        export_url = f"{export_url}?{urlencode(query_params)}"
+
+    context = {
+        "request": request,
+        "columns": POWER_SUPPLY_COLUMNS,
+        "rows": rows,
+        "search": search,
+        "sort": applied_sort,
+        "order": applied_order,
+        "message": message,
+        "error": error,
+        "export_url": export_url,
+        "filters": filters,
+        "filter_options": filter_options,
+        "route_name": "power_supplies_page",
+    }
+    return templates.TemplateResponse("power_supplies.html", context)
 
 
 @app.get("/add", response_class=HTMLResponse, name="add_item_form")
@@ -576,6 +751,39 @@ def _create_workbook(columns: list[dict[str, Any]], rows: list[dict[str, Any]]) 
     wb.save(output)
     output.seek(0)
     return output
+
+
+@app.get("/power-supplies/export", response_class=StreamingResponse, name="export_power_supplies")
+async def export_power_supplies(
+    search: str = "",
+    manufacturer: str = "",
+    series: str = "",
+    power: str = "",
+    voltage: str = "",
+    ip: str = "",
+    sort: str | None = None,
+    order: str | None = None,
+) -> StreamingResponse:
+    filters = {
+        "manufacturer": manufacturer,
+        "series": series,
+        "power": power,
+        "voltage": voltage,
+        "ip": ip,
+    }
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows, _, _ = await fetch_power_supply_summary(conn, search, sort, order, filters)
+
+    file_buffer = _create_workbook(POWER_SUPPLY_COLUMNS, rows)
+    filename = "power-supplies.xlsx"
+    headers = {"Content-Disposition": f"attachment; filename={filename}"}
+    return StreamingResponse(
+        file_buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 @app.get("/{table_alias}/export", response_class=StreamingResponse, name="export_table")
