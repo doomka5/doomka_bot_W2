@@ -174,6 +174,7 @@ async def fetch_rows(
     search: str | None,
     sort: str | None,
     order: str | None,
+    filters: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], str, str]:
     column_names = [col["name"] for col in columns]
     if not column_names:
@@ -184,14 +185,39 @@ async def fetch_rows(
 
     text_columns = [col for col in columns if col["data_type"] in TEXT_TYPES]
 
+    column_map = {col["name"]: col for col in columns}
+
     params: list[Any] = []
-    where_clause = ""
+    conditions: list[str] = []
+    param_index = 1
+
     if search and text_columns:
         like_parts = []
-        for idx, col in enumerate(text_columns, start=1):
-            like_parts.append(f"{quote_ident(col['name'])} ILIKE ${idx}")
+        for col in text_columns:
+            like_parts.append(f"{quote_ident(col['name'])} ILIKE ${param_index}")
             params.append(f"%{search}%")
-        where_clause = " WHERE " + " OR ".join(like_parts)
+            param_index += 1
+        if like_parts:
+            conditions.append("(" + " OR ".join(like_parts) + ")")
+
+    if filters:
+        for column_name, raw_value in filters.items():
+            if raw_value in (None, ""):
+                continue
+            column = column_map.get(column_name)
+            if not column:
+                continue
+            try:
+                typed_value = convert_value(raw_value, column["data_type"])
+            except (TypeError, ValueError):
+                continue
+            conditions.append(f"{quote_ident(column_name)} = ${param_index}")
+            params.append(typed_value)
+            param_index += 1
+
+    where_clause = ""
+    if conditions:
+        where_clause = " WHERE " + " AND ".join(conditions)
 
     select_columns = ", ".join(quote_ident(name) for name in column_names)
     query = (
@@ -314,12 +340,48 @@ async def _render_table(
     order: str | None,
     message: str | None,
     error: str | None,
+    *,
+    filters: dict[str, str] | None = None,
+    filter_columns: list[str] | None = None,
 ) -> HTMLResponse:
+    active_filters = dict(filters or {})
+    filter_options: dict[str, list[dict[str, str]]] = {}
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         table_info = await resolve_table(conn, alias)
         columns = await fetch_columns(conn, table_info["schema"], table_info["table"])
-        rows, applied_sort, applied_order = await fetch_rows(conn, table_info, columns, search, sort, order)
+        column_names = [col["name"] for col in columns]
+
+        if filter_columns:
+            for column_name in filter_columns:
+                if column_name not in column_names:
+                    continue
+                records = await conn.fetch(
+                    f"SELECT DISTINCT {quote_ident(column_name)} FROM {table_info['qualified']}"
+                    f" WHERE {quote_ident(column_name)} IS NOT NULL"
+                    f" ORDER BY {quote_ident(column_name)} ASC"
+                )
+                options: list[dict[str, str]] = []
+                for record in records:
+                    value = record[column_name]
+                    if value is None:
+                        continue
+                    options.append({
+                        "value": str(value),
+                        "label": _format_value(value),
+                    })
+                filter_options[column_name] = options
+
+        rows, applied_sort, applied_order = await fetch_rows(
+            conn,
+            table_info,
+            columns,
+            search,
+            sort,
+            order,
+            filters=active_filters,
+        )
 
     export_url = request.url_for("export_table", table_alias=alias)
     query_params: dict[str, str] = {}
@@ -329,6 +391,9 @@ async def _render_table(
         query_params["sort"] = applied_sort
     if applied_order:
         query_params["order"] = applied_order
+    for key, value in active_filters.items():
+        if value not in (None, ""):
+            query_params[key] = value
     if query_params:
         export_url = f"{export_url}?{urlencode(query_params)}"
 
@@ -345,6 +410,8 @@ async def _render_table(
         "error": error,
         "export_url": export_url,
         "route_name": route_name,
+        "filters": active_filters,
+        "filter_options": filter_options,
     }
     return templates.TemplateResponse(template_name, context)
 
@@ -353,12 +420,31 @@ async def _render_table(
 async def materials_page(
     request: Request,
     search: str = "",
+    material: str = "",
+    color: str = "",
+    thickness: str = "",
     sort: str | None = None,
     order: str | None = None,
     message: str | None = None,
     error: str | None = None,
 ) -> HTMLResponse:
-    return await _render_table(request, "materials", "materials.html", search, sort, order, message, error)
+    filters = {
+        "material": material,
+        "color": color,
+        "thickness": thickness,
+    }
+    return await _render_table(
+        request,
+        "materials",
+        "materials.html",
+        search,
+        sort,
+        order,
+        message,
+        error,
+        filters=filters,
+        filter_columns=["material", "color", "thickness"],
+    )
 
 
 @app.get("/films", response_class=HTMLResponse, name="films_page")
