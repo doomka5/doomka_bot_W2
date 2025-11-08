@@ -17,9 +17,38 @@
 <div class="alert error">{{ error }}</div>
 {% endif %}
 
-<form method="get" class="toolbar">
-    <label for="search">Фильтр по текстовым полям:</label>
-    <input type="text" id="search" name="search" value="{{ search }}" placeholder="Введите часть названия или комментария">
+<form method="get" class="toolbar filters">
+    <div class="field-group">
+        <label for="search">Фильтр по текстовым полям:</label>
+        <input type="text" id="search" name="search" value="{{ search }}" placeholder="Введите часть названия или комментария">
+    </div>
+    <div class="field-group">
+        <label for="material">Материал:</label>
+        <select id="material" name="material">
+            <option value="">Все</option>
+            {% for option in filter_options.get('material', []) %}
+                <option value="{{ option.value }}" {% if filters.get('material') == option.value %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="field-group">
+        <label for="color">Цвет:</label>
+        <select id="color" name="color">
+            <option value="">Все</option>
+            {% for option in filter_options.get('color', []) %}
+                <option value="{{ option.value }}" {% if filters.get('color') == option.value %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="field-group">
+        <label for="thickness">Толщина:</label>
+        <select id="thickness" name="thickness">
+            <option value="">Все</option>
+            {% for option in filter_options.get('thickness', []) %}
+                <option value="{{ option.value }}" {% if filters.get('thickness') == option.value %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+        </select>
+    </div>
     <input type="hidden" name="sort" value="{{ sort }}">
     <input type="hidden" name="order" value="{{ order }}">
     <button type="submit">Применить</button>
@@ -39,7 +68,7 @@
             {% for column in columns %}
                 {% set next_order = 'desc' if sort == column.name and order == 'asc' else 'asc' %}
                 <th>
-                    <a href="{{ url_with_query(request, route_name, search=search, sort=column.name, order=next_order) }}">
+                    <a href="{{ url_with_query(request, route_name, search=search, sort=column.name, order=next_order, material=filters.get('material'), color=filters.get('color'), thickness=filters.get('thickness')) }}">
                         {{ column.title }}
                         {% if sort == column.name %}
                             <span class="sort-indicator">{{ '↑' if order == 'asc' else '↓' }}</span>
