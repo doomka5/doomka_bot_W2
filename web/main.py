@@ -9,12 +9,11 @@ from typing import Any, Iterable
 from urllib.parse import urlencode
 
 import asyncpg
-from fastapi import (Depends, FastAPI, File, Form, HTTPException, Request,
-                     Response, UploadFile, status)
+from fastapi import FastAPI, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -600,109 +599,3 @@ async def export_table(
     return StreamingResponse(file_buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
 
 
-@app.post("/{table_alias}/import", name="import_table")
-async def import_table(
-    request: Request,
-    table_alias: str,
-    file: UploadFile = File(...),
-) -> RedirectResponse:
-    if table_alias not in TABLE_ALIASES:
-        raise HTTPException(status_code=404, detail="Неизвестный раздел")
-
-    try:
-        data = await file.read()
-        workbook = load_workbook(BytesIO(data))
-    except Exception as exc:  # noqa: BLE001
-        target_route = "materials_page" if table_alias == "materials" else "films_page"
-        target_url = request.url_for(target_route)
-        params = urlencode({"error": f"Не удалось прочитать файл: {exc}"})
-        return RedirectResponse(f"{target_url}?{params}", status_code=status.HTTP_303_SEE_OTHER)
-
-    sheet = workbook.active
-    rows_iter = sheet.iter_rows(values_only=True)
-    try:
-        header_row = next(rows_iter)
-    except StopIteration:
-        target_route = "materials_page" if table_alias == "materials" else "films_page"
-        target_url = request.url_for(target_route)
-        params = urlencode({"error": "Пустой файл, импорт невозможен."})
-        return RedirectResponse(f"{target_url}?{params}", status_code=status.HTTP_303_SEE_OTHER)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        table_info = await resolve_table(conn, table_alias)
-        raw_columns = await fetch_columns(conn, table_info["schema"], table_info["table"])
-        column_lookup: dict[str, dict[str, Any]] = {}
-        for col in raw_columns:
-            if col["name"] == "id":
-                continue
-            column_lookup.setdefault(col["name"].lower(), col)
-            column_lookup.setdefault(col["title"].lower(), col)
-
-        header_mapping: list[str | None] = []
-        for cell_value in header_row:
-            if cell_value is None:
-                header_mapping.append(None)
-                continue
-            key = str(cell_value).strip().lower()
-            column = column_lookup.get(key)
-            header_mapping.append(column["name"] if column else None)
-
-        if not any(header_mapping):
-            target_route = "materials_page" if table_alias == "materials" else "films_page"
-            target_url = request.url_for(target_route)
-            params = urlencode({"error": "Не найдено подходящих столбцов для импорта."})
-            return RedirectResponse(f"{target_url}?{params}", status_code=status.HTTP_303_SEE_OTHER)
-
-        rows_to_insert: list[dict[str, Any]] = []
-        for row_values in rows_iter:
-            row_data: dict[str, Any] = {}
-            for idx, raw_value in enumerate(row_values):
-                column_name = header_mapping[idx] if idx < len(header_mapping) else None
-                if not column_name:
-                    continue
-                column_info = column_lookup[column_name.lower()]
-                try:
-                    converted = convert_value(raw_value, column_info["data_type"])
-                except (ValueError, TypeError) as exc:  # noqa: BLE001
-                    workbook.close()
-                    target_route = "materials_page" if table_alias == "materials" else "films_page"
-                    target_url = request.url_for(target_route)
-                    params = urlencode({"error": f"Ошибка импорта в столбце '{column_info['title']}': {exc}"})
-                    return RedirectResponse(f"{target_url}?{params}", status_code=status.HTTP_303_SEE_OTHER)
-                if converted is None:
-                    if not column_info["is_nullable"] and not column_info["has_default"]:
-                        workbook.close()
-                        target_route = "materials_page" if table_alias == "materials" else "films_page"
-                        target_url = request.url_for(target_route)
-                        params = urlencode({"error": f"Столбец '{column_info['title']}' обязателен для заполнения."})
-                        return RedirectResponse(f"{target_url}?{params}", status_code=status.HTTP_303_SEE_OTHER)
-                    continue
-                row_data[column_name] = converted
-            if row_data:
-                rows_to_insert.append(row_data)
-
-        workbook.close()
-
-        if not rows_to_insert:
-            target_route = "materials_page" if table_alias == "materials" else "films_page"
-            target_url = request.url_for(target_route)
-            params = urlencode({"error": "Файл не содержит данных для импорта."})
-            return RedirectResponse(f"{target_url}?{params}", status_code=status.HTTP_303_SEE_OTHER)
-
-        async with conn.transaction():
-            for row_data in rows_to_insert:
-                col_names = list(row_data.keys())
-                placeholders = [f"${idx}" for idx in range(1, len(col_names) + 1)]
-                values = [row_data[name] for name in col_names]
-                query = (
-                    f"INSERT INTO {table_info['qualified']} "
-                    f"({', '.join(quote_ident(name) for name in col_names)}) "
-                    f"VALUES ({', '.join(placeholders)})"
-                )
-                await conn.execute(query, *values)
-
-    target_route = "materials_page" if table_alias == "materials" else "films_page"
-    target_url = request.url_for(target_route)
-    params = urlencode({"message": f"Импортировано записей: {len(rows_to_insert)}"})
-    return RedirectResponse(f"{target_url}?{params}", status_code=status.HTTP_303_SEE_OTHER)

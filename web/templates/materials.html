@@ -6,6 +6,7 @@
 <section class="page-header">
     <h2>📄 Листовые материалы</h2>
     <div class="page-actions">
+        <a class="button" href="{{ url_with_query(request, 'add_item_form', type='materials') }}">➕ Добавить запись</a>
         <a class="button" href="{{ export_url }}">⬇️ Экспорт в Excel</a>
     </div>
 </section>
@@ -53,12 +54,6 @@
     <input type="hidden" name="order" value="{{ order }}">
     <button type="submit">Применить</button>
     <a class="button secondary" href="{{ url_for('materials_page') }}">Сбросить</a>
-</form>
-
-<form action="{{ url_for('import_table', table_alias='materials') }}" method="post" enctype="multipart/form-data" class="toolbar">
-    <label for="materials-file">Импорт из Excel (.xlsx):</label>
-    <input type="file" id="materials-file" name="file" accept=".xlsx" required>
-    <button type="submit">Загрузить</button>
 </form>
 
 <div class="table-wrapper">
