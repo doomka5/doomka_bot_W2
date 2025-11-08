@@ -514,9 +514,12 @@ async def fetch_power_supply_filter_options(conn: asyncpg.Connection) -> dict[st
     for column in ("manufacturer", "series", "power", "voltage", "ip"):
         records = await conn.fetch(
             POWER_SUPPLY_SUMMARY_CTE
-            + f"\nSELECT DISTINCT summary.{column} AS value FROM summary"
+            + f"\nSELECT DISTINCT"
+            + f" summary.{column} AS value,"
+            + f" LOWER(summary.{column}) AS value_lower"
+            + "\nFROM summary"
             + f" WHERE summary.{column} IS NOT NULL"
-            + f" ORDER BY LOWER(summary.{column})"
+            + " ORDER BY value_lower"
         )
         options[column] = [
             {"value": record["value"], "label": _format_value(record["value"])}
