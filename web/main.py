@@ -17,7 +17,7 @@ from openpyxl import Workbook
 
 BASE_DIR = Path(__file__).resolve().parent
 
-app = FastAPI(title="Doomka W2 — CRM склад")
+app = FastAPI(title="3D REKLAMA.PL")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
