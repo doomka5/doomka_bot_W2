@@ -40,15 +40,59 @@ body {
     font-size: 1.4rem;
 }
 
-.nav a {
-    color: #f9fafb;
-    margin-right: 1.2rem;
-    text-decoration: none;
-    font-weight: 500;
+.nav {
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 1.75rem;
 }
 
-.nav a:hover {
+.nav-link,
+.nav-sublink {
+    color: #f9fafb;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.nav-link:hover,
+.nav-sublink:hover {
     text-decoration: underline;
+}
+
+.nav-item {
+    color: #f9fafb;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-weight: 600;
+}
+
+.nav-item--disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.nav-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: rgba(255, 255, 255, 0.18);
+}
+
+.nav-submenu {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+}
+
+.nav-sublink {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
 }
 
 .content {
